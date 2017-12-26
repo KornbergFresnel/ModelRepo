@@ -27,4 +27,47 @@ class History(object):
         return self._history
 
 
+class ReplayBuffer(object):
+    def __init__(self, config):
+        """ReplayBuffer work for off-policy, it will store experiences for agent,
+        and its inner data-structure will store some `(s_t, action_t, reward_t, terminal)` sequences
+        """
 
+        self.memory_size, obs_height, obs_width = config.memory_size, config.obs_height, config.obs_width
+
+        self._obs_mem = np.empty(shape=(self.memory_size, obs_height, obs_width), dtype=np.float32)
+        self._action_mem = np.empty(shape=(self.memory_size, 1), dtype=np.uint8)
+        self._reward_mem = np.empty(shape=(self.memory_size, 1), dtype=np.float32)
+        self._terminal_mem = np.empty(shape=(self.memory_size, 1), dtype=np.bool)
+
+        self.pos_flag = 0  # indicate the position which newest sequence will insert
+        self.dims = (config.obs_height, config.obs_width)   # matains a shape of coming observation
+        self.counter = 0  # matains a counter for experiences storage
+
+        self.history_length = config.history_length
+        self.batch_size = config.batch_size
+
+    def add(self, obs_t, action_t, reward_t, terminal):
+        """Will store newest experience and drop oldest experience
+        """
+
+        assert obs_t.shape == self.dims
+
+        self._obs_mem[self.pos_flag] = obs_t
+        self._action_mem[self.pos_flag] = action_t
+        self._reward_mem[self.pos_flag] = reward_t
+        self._terminal_mem[self.pos_flag] = terminal
+
+        # update indication
+        self.pos_flag = (self.pos_flag + 1) % self.memory_size
+        self.counter += 1 if self.counter < self.memory_size else 0
+
+    def sample(self):
+        """Will sample some experiences from its storage
+        """
+
+        assert self.counter > self.history_length
+
+        # TODO: implements experiences sampling
+        pass
+        
