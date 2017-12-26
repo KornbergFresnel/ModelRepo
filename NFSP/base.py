@@ -44,7 +44,7 @@ class BaseModel(object):
     def checkpoint_dir(self):
         return os.path.join("checkpoints", self.model_dir)
 
-    def construct_nn(self, **kwargs):
+    def _construct_nn(self, **kwargs):
         """Construct neural network, this module may different for different demand.
         """
         pass
