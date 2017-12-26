@@ -45,18 +45,12 @@ class BaseModel(object):
         return os.path.join("checkpoints", self.model_dir)
 
     def _construct_nn(self, **kwargs):
-        """Construct neural network, this module may different for different demand.
-        """
         pass
 
     def predict(self):
-        """Make prediction, this module should be a custom module for different damand.
-        """
         pass
 
     def train(self):
-        """Neural network tranining module, this module shoudl be a custom module for different demand.
-        """
         pass
 
     def save(self, step=None):
