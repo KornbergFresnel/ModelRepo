@@ -9,7 +9,7 @@ class Env(object):
         self.env = gym.make(config)
 
         screen_height, screen_width, self.action_repeat, self.random_start = \
-                config.screen_width,  config.screen_height, config.action_repeat, config.random_start
+                config.obs_width,  config.obs_height, config.action_repeat, config.random_start
         self.display = config.display
         sele.display_area = (screen_width, screen_height)
         
