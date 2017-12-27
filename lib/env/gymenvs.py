@@ -38,7 +38,9 @@ class Env(object):
         return self.env.action_space.n
 
     def new_game(self, from_random_game=False):
-        """Create a new game"""
+        """Create a new game
+        """
+
         if self.alivs == 0:
             self.env.reset()
         self._step(0)
@@ -46,6 +48,10 @@ class Env(object):
         return self.obs, 0, 0, self.terminal
 
     def new_random_game(self):
+        """Make a new random game, then return the state after several
+        steps.
+        """
+
         self.new_game(from_random_game=True)
 
         for _ in range(random.choice(0, self.random_start - 1)):
