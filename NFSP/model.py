@@ -1,4 +1,5 @@
 import time
+import random
 import numpy as np
 import tensorflow as tf
 from base import BaseModel
@@ -8,20 +9,129 @@ from lib.utils import History, ReplayBuffer
 
 
 class Reinforcement(BaseModel):
-    def __init__(self, config):
+    def __init__(self, env, config):
         super().__init__(config)
 
         self.history = History(config)
         self.replay_buffer = ReplayBuffer(config)
+        self.env = env
 
+        self.total_loss = []
+
+    @property
+    def eps_rule(self):
+        """Eps rule return the max epsilonvalue according to 
+        the global configuration.
+
+        RULE: eps_range * {percentage of traninig step with decay}
+        PERCENTAGE: max(0, (eps_count - train_step + start_step)) / eps_step_count
+        """
+        assert self.eps_setp_count > 1
+
+        return self.eps_low + self.eps_range * max(0, (self.eps_count - self.train_step + self.start_step)) / self.eps_step_count
+
+    def _update_network(self):
+        """Update target network with eval network.
+        """
+
+        print("[*] Update target network with eval network...")
+
+        for key in self.t_w.keys():
+            self.t_w_assign_op[key].eval({self.t_w_input[key]: self.e_w[key].eval()})
+
+    def _mini_batch_training(self):
+        """Implement mini-batch training
+        """
+        # sample
+        obs_batch, reward_batch, action_batch, obs_next_batch, terminal_batch = \
+                self.replay_buffer.sample()
+
+        if self.use_double:
+            pred_act_batch = self.q_action.eval({self.s_t: obs_next_batch})
+            q_value_with_max_idx = self.target_q_with_idx.eval({
+                self.target_s_t: obs_next_batch,
+                self.target_q_idx: [[idx, act_idx] for idx, act_idx in enumerate(pred_act_batch)]
+                })
+
+            target_q = (1. - terminal_batch) * reward_batch + q_value_with_max_idx
+        else:
+            q_value = self.target_q.eval({self.target_s_t: obs_next_batch})
+            max_q_value = np.max(q_value, axis=1)
+            target_q = (1. - terminal_batch) * reward_batch + max_q_value
+
+        print("[*] Start {0}/{1} training..".format(self.train_step, self.train_iter))
+
+        start_t = time.time()
+
+        loss = self.train_op.eval({
+            self.target_q_input: target_q,
+            self.action_input: action_batch,
+            self.s_t: obs_batch,
+            self.learning_rate_step: self.train_step
+        })
+
+        end_t = time.time()
+
+        print("[*] --- time consumption: {0:.2f}, loss: {1} ---".format(end_t - start_t, loss))
+
+        self.total_loss.append(loss)
+
+    def _observe(self, obs, reward, action, terminal):
+        """Produce new experiences and add them to buffer, then select
+        training or update current model
+        """
+
+        # reward rectify
+        reward = max(self.reward_min, min(self.reward_max, reward))
+
+        # update history and replay buffer
+        self.history.add(obs)
+        self.replay_buffer.add(obs, reward, action, terminal)
+
+        # train or update
+        if self.train_step % self.update_every == self.update_every - 1:
+            self._update_network()
+        else:
+            self._mini_batch_training()
+
+    def _predict(self, obs, figure_eps=None):
+        """Make action prediction accroding to a certain observation 
+        with default epsilon-greedy policy, and the epsilon obeys the 
+        decay rule which defined at global configuration.
+        """
+
+        eps = figure_eps or self.eps_rule
+        
+        if random.random() < eps:
+            action = self.q_action.eval({self.s_t: obs})
+        else:
+            action = random.choice(self.env.action_size)
+
+        return action
+        
     def train(self):
-        """Execute the training task with `mini_batch` setting."""
+        """Execute the training task with `mini_batch` setting.
+        and this tranining module will training with game emulator
+        """
 
         start_time = time.time()
 
-        # TODO: init history buffer for training and traninig logic
-        
-        # for _ in tqdm(range(0, self.train_iter), ncols=50):  
+        obs, reward, action, terminal = self.env.new_random_game()
+
+        for self.train_step in range(self.history_length):
+            self.history.add(obs)
+
+        for _ in tqdm(range(0, self.train_iter), ncols=50):
+           # always update the history which used for update replay buffer
+           action = self.predict(self.history.get())
+           obs_next, reward, terminal = self.env.act(action)
+
+           self._observe(obs_next, reward, terminal)
+
+           # TODO: finish work for traninig, such as make a summary ?
+        end_time = time.time()
+
+        print("[*] Traninig task ended with time consumption: {0:.2f}s".format(end_time - start_time))
 
     def _construct_nn(self):
         """This method implements the structure of DQN or DDQN,
@@ -112,13 +222,13 @@ class Reinforcement(BaseModel):
 
         # === define optimizer: with learning-rate decay ===
         with tf.get_variable_scope("optimizer"):
-            self.target_q_t = tf.placeholder(tf.float32, shape=(None,), name="target_q_t")
-            self.action = tf.placeholder(tf.int32, shape=(None,), name="action")
+            self.target_q_input = tf.placeholder(tf.float32, shape=(None,), name="target_q_t")
+            self.action_input = tf.placeholder(tf.int32, shape=(None,), name="action")
 
-            action_one_hot = tf.one_hot(self.action, self.env.action_size, on_value=1.0, off_value=0.0, name="action_one_hot")
+            action_one_hot = tf.one_hot(self.action_input, self.env.action_size, on_value=1.0, off_value=0.0, name="action_one_hot")
             q_eval_with_act = tf.reduce_sum(self.q_eval * action_one_hot, axis=1, name="q_eval_with_action")
 
-            self.loss = 0.5 * tf.reduce_mean(tf.square(self.target_q_t - q_eval_with_act))
+            self.loss = 0.5 * tf.reduce_mean(tf.square(self.target_q_input - q_eval_with_act))
 
             self.learning_rate_step = tf.placeholder(tf.int32, None, name="learning_rate_step")
             self.learning_rate_op = tf.maximum(self.learing_rate_min, \
@@ -126,7 +236,7 @@ class Reinforcement(BaseModel):
                         self.learning_rate_decay_step, self.learning_rate_decay))
 
             self.train_op = tf.train.RMSPropOptimizer(self.learning_rate_op, momentum=0.95, \
-                    epislon=0.1).minimize(self.loss)
+                    epsilon=0.1).minimize(self.loss)
 
         # === define summary operation: for record
         # TODO: implement summary operation for training summary
