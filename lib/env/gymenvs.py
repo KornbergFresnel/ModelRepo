@@ -1,5 +1,6 @@
 import gym
 import random
+from ..utils import imresize
 
 
 class Env(object):
@@ -23,7 +24,7 @@ class Env(object):
         """
 
         # TODO: convert raw observation to input observation
-        pass
+        return
 
     @property
     def state(self):

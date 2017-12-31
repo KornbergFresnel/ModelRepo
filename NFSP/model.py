@@ -97,20 +97,56 @@ class Reinforcement(BaseModel):
             self._mini_batch_training()
 
     def _predict(self, obs, figure_eps=None):
-        """Make action prediction accroding to a certain observation 
-        with default epsilon-greedy policy, and the epsilon obeys the 
+        """Make action prediction accroding to a certain observation
+        with default epsilon-greedy policy, and the epsilon obeys the
         decay rule which defined at global configuration.
         """
 
         eps = figure_eps or self.eps_rule
-        
+
         if random.random() < eps:
             action = self.q_action.eval({self.s_t: obs})
         else:
             action = random.choice(self.env.action_size)
 
         return action
-        
+
+    def play(self, n_episode=100, n_steps=10000, test_ep=None, render=False):
+        test_ep = test_ep or self.eps_low
+
+        test_history = History(self.config)
+
+        # if not self.display:
+        #    pass
+
+        best_total_reward, best_episode = 0., 0
+
+        for epis in range(n_episode):
+            obs, reward, action, terminal = self.env.new_random_game()
+            current_reward = 0.
+
+            for _ in range(self.history_length):
+                test_history.append(obs)
+
+            for t in tqdm(range(n_steps), ncols=50):
+                action = self._predict(test_history.get(), test_eps)
+                obs, reward, terminal = self.env.act(action)
+                test_history.add(obs)
+
+                current_reward += reward
+
+                if terminal:
+                    break
+
+            if current_reward > best_total_reward:
+                best_total_reward = current_reward
+                best_episode = epis
+
+            print("[*] Best total reward: {0} related episode: {1}.".format(best_total_reward, best_episode))
+
+        if not self.display:
+            self.env.env.monitor.close()
+
     def train(self):
         """Execute the training task with `mini_batch` setting.
         and this tranining module will training with game emulator
@@ -124,13 +160,13 @@ class Reinforcement(BaseModel):
             self.history.add(obs)
 
         for _ in tqdm(range(0, self.train_iter), ncols=50):
-           # always update the history which used for update replay buffer
-           action = self.predict(self.history.get())
-           obs_next, reward, terminal = self.env.act(action)
+            # always update the history which used for update replay buffer
+            action = self.predict(self.history.get())
+            obs_next, reward, terminal = self.env.act(action)
 
-           self._observe(obs_next, reward, terminal)
+            self._observe(obs_next, reward, terminal)
 
-           # TODO: finish work for traninig, such as make a summary ?
+            # TODO: finish work for traninig, such as make a summary ?
         end_time = time.time()
 
         print("[*] Traninig task ended with time consumption: {0:.2f}s".format(end_time - start_time))
@@ -207,7 +243,7 @@ class Reinforcement(BaseModel):
                         init_func, "dense_layer")
                 self.target_q, self.t_w["q_w"], self.t_w["q_b"] = ops.custom_dense(self.t_l4, self.env.action_size, activation_func, \
                         init_func, "q_layer")
-                
+
                 # under double dqn, the target network should return target-q according to the idx which
                 # from eval-net
                 self.target_q_idx = tf.placeholder(tf.int32, shape=(None, None), name="ddqn_max_action_idx")
@@ -252,29 +288,32 @@ class Reinforcement(BaseModel):
 class SuperVised(BaseModel):
     def __init__(self, config):
         super().__init__(config)
-        
+
         self._construct_nn()
         self.memory = ReplayBuffer(config)
         self.total_loss = []
 
         # === traning record ===
         self.train_step = 0
-    
+
+    def play(self):
+        pass
+
     def train(self):
         print("[* SuperVised] Start {0}/{1} training..".format(self.train_step, self.train_iter))
 
         start_time = time.time()
 
         for _ in tqdm(range(0, self.train_iter), ncols=50):
-           # always update the history which used for update replay buffer
-           obs_batch, _, action_batch, _, _ = self.replay_buffer.sample()
-           loss = self.train_op.eval({self.s_t: obs_batch,
-               self.label: action_batch})
-           self.total_loss.append(loss)
+            # always update the history which used for update replay buffer
+            obs_batch, _, action_batch, _, _ = self.replay_buffer.sample()
+            loss = self.train_op.eval({self.s_t: obs_batch,
+                self.label: action_batch})
+            self.total_loss.append(loss)
 
-           if self.train_step % self.print_every  == (self.print_every - 1):
-               print("[* SuperVised] loss: {1}, iter: {2}".format(loss))
-               
+            if self.train_step % self.print_every == (self.print_every - 1):
+                print("[* SuperVised] loss: {1}, iter: {2}".format(loss))
+
         print("[* SuperVised] --- time consumption: {0:.2f}, loss: {1} ---".format(end_t - start_t, loss))
 
     def _construct_nn(self):
@@ -288,15 +327,15 @@ class SuperVised(BaseModel):
 
         # TODO: construct the supervised deep neural network
         with tf.get_variable_scope("supervised_nn"):
-            self.l1 = ops.conv2d(self.s_t, 32, [8, 8], [4, 4], \
+            self.l1 = ops.conv2d(self.s_t, 32, [8, 8], [4, 4],
                     self.data_format, init_func, activation_func, name="super_conv1")
-            self.l2 = ops.conv2d(self.l1, 64, [4, 4], [2, 2], \
+            self.l2 = ops.conv2d(self.l1, 64, [4, 4], [2, 2],
                     self.data_format, init_func, activation_func, name="super_conv2")
-            self.l3 = ops.conv2d(self.l2, 64, [3, 3], [1, 1], \
+            self.l3 = ops.conv2d(self.l2, 64, [3, 3], [1, 1],
                     self.data_format, init_func, activation_func, name="super_conv3")
             self.flatten = tf.layers.flatten(self.l3, name="flatten")
             self.dense = tf.layers.dense(self.flatten, 256, activation_func, name="dense")
-            self.out = tf.layers,dense(self.dense, self.end.action_size, activation_func, False, name="outlayer")
+            self.out = tf.layers.dense(self.dense, self.end.action_size, activation_func, False, name="outlayer")
 
         # === define optimizer layer ===
         with tf.get_variable_scope("optimizer"):
@@ -306,3 +345,15 @@ class SuperVised(BaseModel):
         self.sess = tf.Session()
         self.sess.run(tf.initialize_all_variables())
 
+
+class NFSP:
+    def __init__(self, config):
+        """This class combine both RL and SuperVised learning model, with sync traning and rendering
+        """
+        self.rl = Reinforcement(config)
+        self.supervised = SuperVised(config)
+
+    def train(self):
+        # get action or policy from RL
+        # get action or policy from supervised learning model
+        self.supervised.

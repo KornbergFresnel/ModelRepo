@@ -1,6 +1,13 @@
 import numpy as np
 
 
+try:
+    from scipy.misc import imresize
+except:
+    import cv2
+    imresize = cv2.resize
+
+
 class History(object):
     def __init__(self, config):
         """History implements the frames stacking, its inner data-structure
@@ -75,4 +82,4 @@ class ReplayBuffer(object):
         terminal_batch = self._terminal_mem[idx, :]
 
         return obs_batch, action_batch, reward_batch, obs_next_bath, terminal_batch
-        
+
