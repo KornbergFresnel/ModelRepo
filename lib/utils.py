@@ -69,5 +69,5 @@ class ReplayBuffer(object):
         assert self.counter > self.history_length
 
         # TODO: implements experiences sampling
-        pass
+        return obs_batch, action_batch, reward_batch, obs_next_bath, terminal_batch
         
