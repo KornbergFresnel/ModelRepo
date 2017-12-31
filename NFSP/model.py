@@ -18,6 +18,8 @@ class Reinforcement(BaseModel):
 
         self.total_loss = []
 
+        self._construct_nn()
+
     @property
     def eps_rule(self):
         """Eps rule return the max epsilonvalue according to 
@@ -194,7 +196,7 @@ class Reinforcement(BaseModel):
 
             l3_shape = self.l3.get_shape().as_list()
 
-            self.t_flat = tf.placeholder(tf.float32, shape=(-1, reduce(lambda x, y: x * y, l3_shape[1:])))
+            self.t_flat = tf.layers.flatten(self.t_l3, name="flatten")
 
             if self.dueling:
                 # TODO: implement dueling layer
@@ -245,4 +247,62 @@ class Reinforcement(BaseModel):
         self.sess = tf.Session()
         self.sess.run(tf.initialize_all_variables())
         self._saver = tf.train.Saver(self.e_w.values(), max_to_keep=self.max_to_keep)
+
+
+class SuperVised(BaseModel):
+    def __init__(self, config):
+        super().__init__(config)
+        
+        self._construct_nn()
+        self.memory = ReplayBuffer(config)
+        self.total_loss = []
+
+        # === traning record ===
+        self.train_step = 0
+    
+    def train(self):
+        print("[* SuperVised] Start {0}/{1} training..".format(self.train_step, self.train_iter))
+
+        start_time = time.time()
+
+        for _ in tqdm(range(0, self.train_iter), ncols=50):
+           # always update the history which used for update replay buffer
+           obs_batch, _, action_batch, _, _ = self.replay_buffer.sample()
+           loss = self.train_op.eval({self.s_t: obs_batch,
+               self.label: action_batch})
+           self.total_loss.append(loss)
+
+           if self.train_step % self.print_every  == (self.print_every - 1):
+               print("[* SuperVised] loss: {1}, iter: {2}".format(loss))
+               
+        print("[* SuperVised] --- time consumption: {0:.2f}, loss: {1} ---".format(end_t - start_t, loss))
+
+    def _construct_nn(self):
+        init_func = tf.truncated_normal_initializer(0, 0.02)
+        activation_func = tf.nn.relu
+
+        if self.data_format == "NCHW":
+            self.s_t = tf.placeholder(tf.float32, shape=(None, self.history_length, self.obs_height, self.width), name="super_input")
+        elif self.data_format == "NHWC":
+            self.s_t = tf.placeholder(tf.float32, shape=(None, self.obs_height, self.obs_width, self.history_length), name="super_input")
+
+        # TODO: construct the supervised deep neural network
+        with tf.get_variable_scope("supervised_nn"):
+            self.l1 = ops.conv2d(self.s_t, 32, [8, 8], [4, 4], \
+                    self.data_format, init_func, activation_func, name="super_conv1")
+            self.l2 = ops.conv2d(self.l1, 64, [4, 4], [2, 2], \
+                    self.data_format, init_func, activation_func, name="super_conv2")
+            self.l3 = ops.conv2d(self.l2, 64, [3, 3], [1, 1], \
+                    self.data_format, init_func, activation_func, name="super_conv3")
+            self.flatten = tf.layers.flatten(self.l3, name="flatten")
+            self.dense = tf.layers.dense(self.flatten, 256, activation_func, name="dense")
+            self.out = tf.layers,dense(self.dense, self.end.action_size, activation_func, False, name="outlayer")
+
+        # === define optimizer layer ===
+        with tf.get_variable_scope("optimizer"):
+            self.loss = 0.5 * tf.reduce_mean(tf.square(self.out - self.label))
+            self.train_op = tf.train.RMSPropOptimizer(self.learning_rate).minimize(self.loss)
+
+        self.sess = tf.Session()
+        self.sess.run(tf.initialize_all_variables())
 
