@@ -68,6 +68,11 @@ class ReplayBuffer(object):
 
         assert self.counter > self.history_length
 
-        # TODO: implements experiences sampling
+        idx = np.random.choice(self.counter, self.batch_size)
+        obs_batch = self._obs_mem[idx, :]
+        action_batch = self._action_mem[idx, :]
+        obs_next_bath = self._obs_mem[(idx + 1) % self.counter, :]
+        terminal_batch = self._terminal_mem[idx, :]
+
         return obs_batch, action_batch, reward_batch, obs_next_bath, terminal_batch
         
