@@ -13,6 +13,7 @@ def extract_attrs(config):
     return {k: v for inspect.getmembers(config)
             if not k.startwith("__") and not callable(k)}
 
+
 class BaseModel(object):
     def __init__(self, config):
         """Initialize configuration for DNN model"""
