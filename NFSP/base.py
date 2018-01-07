@@ -1,17 +1,72 @@
-import random
-import tensorflow as tf
-import numpy as np
-import pprint
 import inspect
 import os
+import numpy as np
+import tensorflow as tf
 
 
 def extract_attrs(config):
     """This method can extract all non-inner attrs (start with `__`) from raw config.
     """
 
-    return {k: v for inspect.getmembers(config)
+    return {k: v for k, v in inspect.getmembers(config)
             if not k.startwith("__") and not callable(k)}
+
+
+class MetaData(object):
+    obs = None
+    action = None
+    reward = None
+    obs_next = None
+    done = None
+
+
+class ReplayBuffer(object):
+    def __init__(self, batch_size, memory_size, obs_shape):
+        self.flag = 0
+        self.size = 0
+
+        self.memory_size = memory_size
+        self.batch_size = batch_size
+
+        self.obs = np.empty(shape=(memory_size,) + obs_shape, dtype=np.float32)
+        self.action = np.empty(shape=(memory_size, 1), dtype=np.int32)
+        self.reward = np.empty(shape=(memory_size, 1), dtype=np.float32)
+        self.done = np.empty(shape=(memory_size, 1), dtype=np.bool)
+
+    def push(self, obs, action, reward, obs_next, done):
+        self.flag = (self.flag + 1) % self.memory_size
+        self.size = min(self.size + 1, self.memory_size)
+
+        self.obs[self.flag, :] = obs
+        self.action[self.flag, :] = action
+        self.reward[self.flag, :] = reward
+        self.done[self.flag, :] = done
+
+        self.flag = (self.flag + 1) % self.memory_size
+        self.size = min(self.size + 1, self.memory_size)
+
+        # 无处安放的obs_next啊，你就现在这里暂时歇息，以后再说
+        self.obs[self.flag, :] = obs_next
+
+    def free_memory(self):
+        self.flag = 0
+        self.size = 0
+
+    def sample(self):
+        """Random sample batch data from inner data
+        """
+        batch_data = MetaData()
+
+        idx = np.random.choice(self.size, self.batch_size)
+
+        batch_data.obs = self.obs[idx]
+        batch_data.action = self.action[idx]
+        batch_data.reward = self.reward[idx]
+        # batch_data.obs_next = self.obs[(idx + 1) % self.memory_size]
+        batch_data.obs_next = self.obs_next[idx]
+        batch_data.done = self.done[idx]
+
+        return batch_data
 
 
 class BaseModel(object):
@@ -21,15 +76,35 @@ class BaseModel(object):
         self.config = config
         self.sess = None
 
-        # === parse config as inner attributes
-        try:
-            self._attrs = config.__dict__['__flag']
-        except:
-            self._attrs = extract_attrs(config)
+        self.use_double = config.use_double
+        self.dueling = config.dueling
 
-        for attr in self._attrs:
-            name = attr if not attr.startwith("_") else attr[1:]
-            setattr(self, name, getattr(self.config, attr))
+        self.update_every = config.update_every
+        self.eps_low = config.eps_low
+        self.eps_high = config.eps_high
+        self.eps_range = config.eps_high - config.eps_low
+        self.eps_count = config.eps_count
+
+        self.train_step = 0
+        self.start_step = 0
+        self.iteration = config.iteration
+
+        self.max_to_keep = config.max_to_keep
+
+        self.data_format = config.data_format
+        self.learning_rate = config.learning_rate
+
+        self.memory_size = config.memory_size
+
+        # === parse config as inner attributes
+        #try:
+        #    self._attrs = config.__dict__['__flag']
+        #except Exception as e:
+        #    self._attrs = extract_attrs(config)
+
+        #for attr in self._attrs:
+        #    name = attr if not attr.startwith("_") else attr[1:]
+        #    setattr(self, name, getattr(self.config, attr))
 
     @property
     def saver(self):
