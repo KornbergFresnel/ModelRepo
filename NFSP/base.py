@@ -170,3 +170,17 @@ class BaseModel(object):
         plt.xlabel("Training Episode")
         plt.ylabel("Average Loss on 512 Iteration")
         plt.show()
+
+    def record(self):
+        if not os.path.exists("data"):
+            os.mkdir("data")
+
+        import pickle
+
+        with open("data/log_loss.pkl", "wb") as f:
+            pickle.dump(self.loss_record, f)
+
+        with open("data/log_reward.pkl", "wb") as f:
+            pickle.dump(self.reward_record, f)
+
+        print(">> Record done!")
