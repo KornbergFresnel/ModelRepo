@@ -2,6 +2,7 @@ import random
 import gym
 import time
 import tqdm
+import sys
 import tensorflow as tf
 import numpy as np
 
@@ -10,8 +11,8 @@ from base import ReplayBuffer, BaseModel
 
 
 ENV_NAME = "CartPole-v0"
-EPISODE = 10000
-TEST_EPISODE = 300
+EPISODE = 40
+TEST_EPISODE = 10
 STEP = 300  # step limitation
 
 
@@ -21,15 +22,15 @@ class DQN(BaseModel):
         super(DQN, self).__init__(config)
         self.env = env
 
-        self.replay_buffer = ReplayBuffer(config.batch_size, config.memory_size, env.obs_space.shape())
+        self.replay_buffer = ReplayBuffer(config.batch_size, config.memory_size, env.observation_space.shape)
 
         self.num_train = 0
 
         self._build_network()
 
         self.sess = tf.Session()
-        self.sess.run(tf.global_variables_initializer())
-        self._saver = tf.train.Saver(self.e_w.values(), max_to_keep=self.max_to_keep)
+        self.sess.run(tf.initialize_all_variables())
+        # self._saver = tf.train.Saver(self.e_w.values(), max_to_keep=self.max_to_keep)
 
     def _greedy_policy(self, obs, train=True):
 
@@ -47,9 +48,10 @@ class DQN(BaseModel):
         eps = eps_rule()
         
         if random.random() < eps:
-            action = self.q_action.eval({self.eval_obs: obs})
+            with self.sess.as_default():
+                action = self.q_action.eval({self.eval_obs: obs.reshape((1, 4))})[0]
         else:
-            action = random.randint(self.env.action_spac.n)
+            action = random.randint(1, self.env.action_space.n)
 
         return action
 
@@ -61,13 +63,15 @@ class DQN(BaseModel):
             return self.env.action_space.sample()
             
     def perceive(self, obs, action, reward, obs_next, done):
-        # TODO: add current data to replay buffer, then training with mini-batch
         self.replay_buffer.put(obs, action, reward, obs_next, done)
 
-        if self.train_step % self.update_every == self.update_every - 1:
+    def train(self):
+        if self.num_train % self.update_every == self.update_every - 1:
             self._update()
         else:
             self._train()
+
+        self.num_train += 1
 
     def _build_network(self):
         """This method implements the structure of DQN or DDQN,
@@ -82,42 +86,31 @@ class DQN(BaseModel):
 
         # === Build Evaluation Network ===
         with tf.variable_scope("eval"):
-            self.eval_obs = tf.placeholder(tf.float32, shape=(None,) + self.env.obs_space.shape(), name="input_layer")
-            self.l1, self.e_w["l1"], self.e_w["l1_b"] = ops.conv2d(self.eval_obs, 32, [8, 8], [4, 4], self.data_format, init_func, activation_func, name="l1")
-            self.l2, self.e_w["l2"], self.e_w["l2_b"] = ops.conv2d(self.l1, 64, [4, 4], [2, 2], self.data_format, init_func,
-                                                                   activation_func, name="l2")
-            self.l3, self.e_w["l3"], self.e_w["l3_b"] = ops.conv2d(self.l2, 64, [3, 3], [1, 1], self.data_format, init_func,
-                                                                   activation_func, name="l3")
-
-            self.flat = tf.layers.flatten(self.l3)
+            self.eval_obs = tf.placeholder(tf.float32, shape=(None,) + self.env.observation_space.shape, name="input_layer")
+            self.l1, self.e_w["l1"], self.e_w["l1_b"] = ops.conv1d(self.eval_obs, 20, initializer=init_func, activation=activation_func, name="l1")
+            self.l2, self.e_w["l2"], self.e_w["l2_b"] = ops.conv1d(self.l1, 20, initializer=init_func, activation=activation_func, name="l2")
+            self.l3, self.e_w["l3"], self.e_w["l3_b"] = ops.conv1d(self.l2, 20, initializer=init_func, activation=activation_func, name="l3")
 
             if self.dueling:
                 pass
             else:
                 # dense layer
-                self.l4, self.e_w["l4"], self.e_w["l4_b"] = ops.custom_dense(self.flat, 512, activation_func, init_func, "dense_layer")
-                self.e_q, self.e_w["q_w"], self.e_w["q_b"] = ops.custom_dense(self.l4, self.env.action_space.n, activation_func, init_func, "q_layer")
+                self.e_q, self.e_w["q_w"], self.e_w["q_b"] = ops.custom_dense(self.l3, self.env.action_space.n, activation_func, init_func, "q_layer")
 
             self.q_action = tf.argmax(self.e_q, axis=1)  # record the index of final-layer, also map to the action index
         
         # === Build Target Network ===
         with tf.variable_scope("target"):
-            self.target_obs = tf.placeholder(tf.float32, shape=(None, self.env.obs_space.shape(),), name="input_layer")
-            self.t_l1, self.t_w["l1"], self.t_w["l1_b"] = ops.conv2d(self.target_obs, 32, [8, 8], [4, 4], self.data_format, init_func,
-                                                                     activation_func, name="l1")
-            self.t_l2, self.t_w["l2"], self.t_w["l2_b"] = ops.conv2d(self.t_l1, 64, [4, 4], [2, 2], self.data_format, init_func,
-                                                                     activation_func, name="l2")
-            self.t_l3, self.t_w["l3"], self.t_w["l3_b"] = ops.conv2d(self.t_l2, 64, [3, 3], [1, 1], self.data_format, init_func,
-                                                                     activation_func, name="l3")
-
-            self.t_flat = tf.layers.flatten(self.t_l3)
+            self.target_obs = tf.placeholder(tf.float32, shape=(None,) + self.env.observation_space.shape, name="input_layer")
+            self.t_l1, self.t_w["l1"], self.t_w["l1_b"] = ops.conv1d(self.target_obs, 20, initializer=init_func, activation=activation_func, name="l1")
+            self.t_l2, self.t_w["l2"], self.t_w["l2_b"] = ops.conv1d(self.t_l1, 20, initializer=init_func, activation=activation_func, name="l2")
+            self.t_l3, self.t_w["l3"], self.t_w["l3_b"] = ops.conv1d(self.t_l2, 20, initializer=init_func, activation=activation_func, name="l3")
 
             if self.dueling:
                 pass
             else:
                 # dense layer
-                self.t_l4, self.t_w["l4"] ,self.t_w["l4_b"] = ops.custom_dense(self.t_flat, 512, activation_func, init_func, "dense_layer")
-                self.t_q, self.t_w["q_w"], self.t_w["q_b"] = ops.custom_dense(self.t_l4, self.env.action_space.n, activation_func, init_func, "q_layer")
+                self.t_q, self.t_w["q_w"], self.t_w["q_b"] = ops.custom_dense(self.t_l3, self.env.action_space.n, activation_func, init_func, "q_layer")
 
                 # if we training with double DQN, then the target network will produce an action with indicator from
                 # evaluation network so the Q selection should accept an `index` tensor which depends on the result of
@@ -136,13 +129,14 @@ class DQN(BaseModel):
         
         # === Define the optimization ===
         with tf.variable_scope("optimization"):
-            self.t_q_input = tf.placeholder(tf.float32, shape=(None, self.env.action_space.shape()), name="target_q_input")
+            self.t_q_input = tf.placeholder(tf.float32, shape=(None,), name="target_q_input")
             self.action_input = tf.placeholder(tf.int32, shape=(None,), name="action_input")
             
-            action_one_hot = tf.one_hot(self.action_input, self.env.action_space.shape(), on_value=1.0, off_value=0.0, name="action_one_hot")
+            action_one_hot = tf.one_hot(self.action_input, self.env.action_space.n, on_value=1.0, off_value=0.0, name="action_one_hot")
             q_eval_with_act = tf.reduce_sum(self.e_q * action_one_hot, axis=1, name="q_eval_with_action")
 
-            self.loss = 0.5 * tf.reduce_sum(tf.square(self.t_q_input - q_eval_with_act))
+            temp = tf.square(self.t_q_input - q_eval_with_act)
+            self.loss = 0.5 * tf.reduce_mean(temp)
 
             # TODO: consider add variant leraning rate
 
@@ -151,19 +145,19 @@ class DQN(BaseModel):
     def _update(self):
         """Implement the network update
         """
-
+        print("[*] ---> {}th training Network Update ...".format(self.num_train + 1))
         length = len(self.t_w)
 
-        for i, name in enumerate(self.t_w.keys()):
-            self.t_w_assign_op[name].eval({self.t_w_input: self.e_w[name]})
-            print("[*] ---> Network Update: {0:.3f}%".format(i / length * 100.0))
+        with self.sess.as_default():
+            for i, name in enumerate(self.t_w.keys()):
+                self.t_w_assign_op[name].eval({self.t_w_input[name]: self.e_w[name].eval()})
 
     def _train(self):
         """Execute the training task with `mini_batch` setting.
         and this traninig module will training with game emulator"""
 
-        self.num_train += 1
-        print("[*] Begin {}th training ...".format(self.num_train))
+        print("\n[*] Begin {}th training ...".format(self.num_train + 1))
+        time.sleep(0.5)
 
         loss = []
         start_time = time.time()
@@ -174,8 +168,12 @@ class DQN(BaseModel):
             loss.append(info["loss"])
         
         end_time = time.time()
+        time.sleep(0.01)
 
-        print("[*] Time consumption: {0:.3f}s, Average loss: {1}".format(end_time - start_time, sum(loss) / len(loss)))
+        # loss record
+        self.loss_record.append(sum(loss) / len(loss))
+
+        print("\n[*] Time consumption: {0:.3f}s, Average loss: {1:.6f}".format(end_time - start_time, self.loss_record[-1]))
         
     def _mini_batch(self):
         """Implement mini-batch training
@@ -186,21 +184,23 @@ class DQN(BaseModel):
         # sample from replay-buffer
         data_batch = self.replay_buffer.sample()
 
-        if self.use_double:
-            pred_act_batch = self.q_action.eval({self.eval_obs: data_batch.obs_next})  # get the action of next observation
-            q_value_with_max_idx = self.target_q_action_with_idx.eval({
-                self.target_obs: data_batch.obs_next,
-                self.t_q_input: [[idx, act_idx] for idx, act_idx in enumerate(pred_act_batch)]
-            })
-            target_q = (1. - data_batch.done) * data_batch.reward + q_value_with_max_idx
-        else:
-            q_value = self.t_q.eval({self.target_obs: data_batch.obs_next})
-            max_q_value = np.max(q_value, axis=1)
-            target_q = (1. - data_batch.done) * data_batch.reward + max_q_value
+        with self.sess.as_default():
+            if self.use_double:
+                pred_act_batch = self.q_action.eval({self.eval_obs: data_batch.obs_next})  # get the action of next observation
+                q_value_with_max_idx = self.target_q_action_with_idx.eval({
+                    self.target_obs: data_batch.obs_next,
+                    self.target_q_idx_input: [[idx, act_idx] for idx, act_idx in enumerate(pred_act_batch)]
+                })
+                target_q = (1. - data_batch.done) * data_batch.reward + q_value_with_max_idx
+            else:
+                q_value = self.t_q.eval({self.target_obs: data_batch.obs_next})
+                max_q_value = np.max(q_value, axis=1)
+                target_q = (1. - data_batch.done) * data_batch.reward + max_q_value
         
-        info["loss"] = self.train_op.eval({
+        info["loss"], _ = self.sess.run([self.loss, self.train_op], {
             self.t_q_input: target_q,
             self.action_input: data_batch.action,
+            self.eval_obs: data_batch.obs
             # self.learning_rate_step: self.train_step
         })
 
@@ -208,10 +208,11 @@ class DQN(BaseModel):
 
 
 def test(env, agent, train_round):
-    total_reward = 0
+    test_reward_record = []
 
     for episode in range(TEST_EPISODE):
         obs = env.reset()
+        total_reward = 0
 
         for _ in range(STEP):
             # env.render()
@@ -223,8 +224,10 @@ def test(env, agent, train_round):
             if done:
                 break
 
-    ave_reward = total_reward / TEST_EPISODE
-    mess = "[*] Test at episode: {0} with average reward: {1:.3f}".format(train_round, ave_reward)
+        agent.reward_record.append(total_reward)
+        test_reward_record.append(total_reward)
+
+    mess = "[*] -- Test at episode: {0} with average reward: {1:.3f}".format(train_round, sum(test_reward_record) / len(test_reward_record))
 
     print(mess)
 
@@ -233,6 +236,8 @@ def main(_config):
     env = gym.make(ENV_NAME)
     
     agent = DQN(env, _config)
+
+    print("[*] --- Begin Emulator Training ---")
 
     for episode in range(EPISODE):
 
@@ -251,6 +256,10 @@ def main(_config):
 
             obs = obs_next
 
-        if (episode + 1) % 100 == 0:  # test every 100 episodes
-            print("[*] === Enter TEST module ===")
+        agent.train()
+
+        if (episode + 1) % _config.test_every == 0:  # test every 100 episodes
+            print("\n[*] === Enter TEST module ===")
             test(env, agent, episode)
+
+    agent.plot()

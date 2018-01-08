@@ -2,6 +2,7 @@ import inspect
 import os
 import numpy as np
 import tensorflow as tf
+import matplotlib.pyplot as plt
 
 
 def extract_attrs(config):
@@ -29,18 +30,18 @@ class ReplayBuffer(object):
         self.batch_size = batch_size
 
         self.obs = np.empty(shape=(memory_size,) + obs_shape, dtype=np.float32)
-        self.action = np.empty(shape=(memory_size, 1), dtype=np.int32)
-        self.reward = np.empty(shape=(memory_size, 1), dtype=np.float32)
-        self.done = np.empty(shape=(memory_size, 1), dtype=np.bool)
+        self.action = np.empty(shape=(memory_size,), dtype=np.int32)
+        self.reward = np.empty(shape=(memory_size,), dtype=np.float32)
+        self.done = np.empty(shape=(memory_size,), dtype=np.bool)
 
-    def push(self, obs, action, reward, obs_next, done):
+    def put(self, obs, action, reward, obs_next, done):
         self.flag = (self.flag + 1) % self.memory_size
         self.size = min(self.size + 1, self.memory_size)
 
         self.obs[self.flag, :] = obs
-        self.action[self.flag, :] = action
-        self.reward[self.flag, :] = reward
-        self.done[self.flag, :] = done
+        self.action[self.flag] = action
+        self.reward[self.flag] = reward
+        self.done[self.flag] = done
 
         self.flag = (self.flag + 1) % self.memory_size
         self.size = min(self.size + 1, self.memory_size)
@@ -62,8 +63,7 @@ class ReplayBuffer(object):
         batch_data.obs = self.obs[idx]
         batch_data.action = self.action[idx]
         batch_data.reward = self.reward[idx]
-        # batch_data.obs_next = self.obs[(idx + 1) % self.memory_size]
-        batch_data.obs_next = self.obs_next[idx]
+        batch_data.obs_next = self.obs[(idx + 1) % self.memory_size]
         batch_data.done = self.done[idx]
 
         return batch_data
@@ -75,9 +75,11 @@ class BaseModel(object):
         self._saver = None
         self.config = config
         self.sess = None
+        self.loss_record = []
+        self.reward_record = []
 
         self.use_double = config.use_double
-        self.dueling = config.dueling
+        self.dueling = config.use_dueling
 
         self.update_every = config.update_every
         self.eps_low = config.eps_low
@@ -162,3 +164,8 @@ class BaseModel(object):
             print("[!] >> Load FAILED: {}".format(self.checkpoint_dir))
             return False
 
+    def plot(self, *args):
+        plt.plot(np.arange(len(self.reward_record)), self.reward_record, color="green", linestyle="dashed")
+        plt.xlabel("Training Episode")
+        plt.ylabel("Average Loss on 512 Iteration")
+        plt.show()

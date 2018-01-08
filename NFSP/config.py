@@ -1,14 +1,15 @@
 class AgentConfig(object):
     use_double = False
     use_dueling = False
-    data_format = "NCHW"
+    data_format = "panel"
 
 
 class TrainingConfig(object):
     memory_size = 256
     batch_size = 64
 
-    iteration = 1000
+    iteration = 512
+    update_every = 5
     decay_start = 0
     decay_end = iteration
 
@@ -23,4 +24,5 @@ class TrainingConfig(object):
 
 
 class GeneralConfig(AgentConfig, TrainingConfig):
+    test_every = 1
     pass
