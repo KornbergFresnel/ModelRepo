@@ -262,3 +262,5 @@ def main(_config):
         if (episode + 1) % _config.test_every == 0:  # test every 100 episodes
             print("\n[*] === Enter TEST module ===")
             test(env, agent, episode)
+
+    agent.record()
