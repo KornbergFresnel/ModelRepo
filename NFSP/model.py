@@ -11,7 +11,7 @@ from base import ReplayBuffer, BaseModel
 
 
 ENV_NAME = "CartPole-v0"
-EPISODE = 40
+EPISODE = 5
 TEST_EPISODE = 10
 STEP = 300  # step limitation
 
@@ -30,7 +30,7 @@ class DQN(BaseModel):
 
         self.sess = tf.Session()
         self.sess.run(tf.initialize_all_variables())
-        # self._saver = tf.train.Saver(self.e_w.values(), max_to_keep=self.max_to_keep)
+        self._saver = tf.train.Saver(list(self.e_w.values()), max_to_keep=self.max_to_keep)
 
     def _greedy_policy(self, obs, train=True):
 
@@ -68,6 +68,7 @@ class DQN(BaseModel):
     def train(self):
         if self.num_train % self.update_every == self.update_every - 1:
             self._update()
+            self.save(step=self.num_train)
         else:
             self._train()
 
@@ -261,5 +262,3 @@ def main(_config):
         if (episode + 1) % _config.test_every == 0:  # test every 100 episodes
             print("\n[*] === Enter TEST module ===")
             test(env, agent, episode)
-
-    agent.plot()
