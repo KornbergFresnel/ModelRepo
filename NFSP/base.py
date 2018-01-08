@@ -97,7 +97,7 @@ class BaseModel(object):
         self.learning_rate = config.learning_rate
 
         self.memory_size = config.memory_size
-
+        self.env_name = config.env_name
         # === parse config as inner attributes
         #try:
         #    self._attrs = config.__dict__['__flag']
@@ -112,11 +112,12 @@ class BaseModel(object):
     def saver(self):
         # at most 10 recent checkpoints will be stored 
         self._saver = tf.train.Saver(max_to_keep=10) if self._saver is None else self._saver
+        return self._saver
 
     @property
     def model_dir(self):
         """Model dir path accept configuration from `self.config`"""
-        return self.config.env_name + '/'
+        return self.env_name + '/'
 
     @property
     def checkpoint_dir(self):
@@ -141,8 +142,8 @@ class BaseModel(object):
 
         model_name = type(self).__name__
         if not os.path.exists(self.checkpoint_dir):
-            os.mkdir(self.checkpoint_dir)
-        self.saver.save(self.sess, model_name, global_step=step)
+            os.makedirs(self.checkpoint_dir, exist_ok=True)
+        self.saver.save(self.sess, self.checkpoint_dir + model_name, global_step=step)
 
     def load(self, step=None):
         """Load model from storage, this method accept a `int` parameter to indicate the certain model file.
