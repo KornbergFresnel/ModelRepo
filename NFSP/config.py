@@ -9,7 +9,7 @@ class TrainingConfig(object):
     batch_size = 64
 
     iteration = 512
-    update_every = 5
+    update_every = 2
     decay_start = 0
     decay_end = iteration
 
@@ -25,4 +25,5 @@ class TrainingConfig(object):
 
 class GeneralConfig(AgentConfig, TrainingConfig):
     test_every = 1
+    env_name = "CartPole-v0"
     pass
