@@ -5,7 +5,7 @@
 
 **Multi-Agent Deep Deterministic Policy Gradient**
 
-paper: [https://arxiv.org/abs/1706.02275](Multi-Agent Actor-Critic Mixed Cooperative-Competitive Environments 2017 NIPS)
+arxiv link: [https://arxiv.org/abs/1706.02275](Multi-Agent Actor-Critic Mixed Cooperative-Competitive Environments 2017 NIPS)
 
 run `run.py` do traninig task, get more information about executation: `python run.py -h`
 
