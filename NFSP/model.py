@@ -1,132 +1,115 @@
 import random
-import gym
 import time
 import tqdm
-import sys
 import tensorflow as tf
 import numpy as np
 
-from lib.tools import ops
-from base import ReplayBuffer, BaseModel
-
-
-ENV_NAME = "CartPole-v0"
-EPISODE = 5
-TEST_EPISODE = 10
-STEP = 300  # step limitation
+from base import ReplayBuffer, BaseModel, SReplayBuffer
 
 
 class DQN(BaseModel):
     def __init__(self, env, config):
-
-        super(DQN, self).__init__(config)
+        super(DQN, self).__init__("dqn", config)
+        
         self.env = env
-
+        self.batch_size = config.batch_size
         self.replay_buffer = ReplayBuffer(config.batch_size, config.memory_size, env.observation_space.shape)
-
         self.num_train = 0
 
-        self._build_network()
+        self.input_layer = tf.placeholder(tf.float32, (None,) + self.env.observation_space.shape)
+
+        with tf.variable_scope(self.name):
+            self._build_network()
 
         self.sess = tf.Session()
-        self.sess.run(tf.initialize_all_variables())
-        self._saver = tf.train.Saver(list(self.e_w.values()), max_to_keep=self.max_to_keep)
+        self.sess.run(tf.global_variables_initializer())
 
-    def _greedy_policy(self, obs, train=True):
+        model_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, self.name)
 
-        # === inner func: eps decay rule
-        def eps_rule():
-            """Eps rule return the max epsilon vlaue according to the global configuration.
-            
-            RULE: eps_range * {percentage of training step with decay}
-            PERCENTAGE: max(0, (eps_count - train_step + start_step)) / eps_step_count
-            """
+        self._saver = tf.train.Saver(model_vars)
 
-            assert self.eps_count > 1
-
-            return self.eps_low + self.eps_range * max(0, (self.eps_count - self.train_step + self.start_step)) / self.eps_count
-        eps = eps_rule()
-        
-        if random.random() < eps:
+    def _greedy_policy(self, obs):
+        if random.random() < self.eps:
             with self.sess.as_default():
-                action = self.q_action.eval({self.eval_obs: obs.reshape((1, 4))})[0]
+                action = self.q_action.eval({self.input_layer: obs.reshape((1, 4))})[0]
         else:
-            action = random.randint(1, self.env.action_space.n)
+            action = self.env.action_space.sample()
 
         return action
 
     def pick_action(self, obs, policy='greedy', train=True):
         # run eval network
-        if policy == "greedy":
-            return self._greedy_policy(obs, train)
+        if train:
+            if policy == "greedy":
+                return self._greedy_policy(obs)
+            else:
+                return self.env.action_space.sample()
         else:
-            return self.env.action_space.sample()
+            with self.sess.as_default():
+                action = self.q_action.eval({self.input_layer: obs.reshape((1, 4))})[0]
+            return action
             
-    def perceive(self, obs, action, reward, obs_next, done):
-        self.replay_buffer.put(obs, action, reward, obs_next, done)
+    def perceive(self, obs, action, reward, done):
+        self.replay_buffer.put(obs, action, reward, done)
 
-    def train(self):
-        if self.num_train % self.update_every == self.update_every - 1:
-            self._update()
-            self.save(step=self.num_train)
-        else:
-            self._train()
-
-        self.num_train += 1
+    def train(self, num_train):
+        self._train(num_train)
+        self.eps = max(self.eps_decay, (self.eps - self.eps_decay))
 
     def _build_network(self):
         """This method implements the structure of DQN or DDQN,
         and for convenient, all weights and bias will be recorded in `self.e_w` and `self.t_w`
         """
-
-        self.e_w = {}  # weight matrix for evaluation-network
-        self.t_w = {}  # weight matrix for target-network
-        
-        init_func = tf.truncated_normal_initializer(0, 0.02)
         activation_func = tf.nn.relu
 
         # === Build Evaluation Network ===
         with tf.variable_scope("eval"):
-            self.eval_obs = tf.placeholder(tf.float32, shape=(None,) + self.env.observation_space.shape, name="input_layer")
-            self.l1, self.e_w["l1"], self.e_w["l1_b"] = ops.conv1d(self.eval_obs, 20, initializer=init_func, activation=activation_func, name="l1")
-            self.l2, self.e_w["l2"], self.e_w["l2_b"] = ops.conv1d(self.l1, 20, initializer=init_func, activation=activation_func, name="l2")
-            self.l3, self.e_w["l3"], self.e_w["l3_b"] = ops.conv1d(self.l2, 20, initializer=init_func, activation=activation_func, name="l3")
+            self.eval_scope_name = tf.get_variable_scope().name
+
+            self.l1 = tf.layers.dense(self.input_layer, units=20, activation=activation_func, name="eval_l1")
+            self.l2 = tf.layers.dense(self.l1, units=20, activation=activation_func, name="eval_l2")
+            self.l3 = tf.layers.dense(self.l2, units=20, activation=activation_func, name="eval_l3")
 
             if self.dueling:
                 pass
             else:
                 # dense layer
-                self.e_q, self.e_w["q_w"], self.e_w["q_b"] = ops.custom_dense(self.l3, self.env.action_space.n, activation_func, init_func, "q_layer")
+                self.e_q = tf.layers.dense(self.l3, units=self.env.action_space.n, activation=activation_func,
+                                           use_bias=False, name="eval_q")
 
-            self.q_action = tf.argmax(self.e_q, axis=1)  # record the index of final-layer, also map to the action index
+            # record the index of final-layer, also map to the action index
+            self.q_action = tf.argmax(self.e_q, axis=1, name="eval_action_select")
         
         # === Build Target Network ===
         with tf.variable_scope("target"):
-            self.target_obs = tf.placeholder(tf.float32, shape=(None,) + self.env.observation_space.shape, name="input_layer")
-            self.t_l1, self.t_w["l1"], self.t_w["l1_b"] = ops.conv1d(self.target_obs, 20, initializer=init_func, activation=activation_func, name="l1")
-            self.t_l2, self.t_w["l2"], self.t_w["l2_b"] = ops.conv1d(self.t_l1, 20, initializer=init_func, activation=activation_func, name="l2")
-            self.t_l3, self.t_w["l3"], self.t_w["l3_b"] = ops.conv1d(self.t_l2, 20, initializer=init_func, activation=activation_func, name="l3")
+            self.target_scope_name = tf.get_variable_scope().name
+
+            self.t_l1 = tf.layers.dense(self.input_layer, units=20, activation=activation_func, name="target_l1")
+            self.t_l2 = tf.layers.dense(self.t_l1, units=20, activation=activation_func, name="target_l2")
+            self.t_l3 = tf.layers.dense(self.t_l2, units=20, activation=activation_func, name="target_l3")
 
             if self.dueling:
                 pass
             else:
                 # dense layer
-                self.t_q, self.t_w["q_w"], self.t_w["q_b"] = ops.custom_dense(self.t_l3, self.env.action_space.n, activation_func, init_func, "q_layer")
+                self.t_q = tf.layers.dense(self.t_l3, units=self.env.action_space.n, activation=activation_func,
+                                           use_bias=False, name="target_q")
 
                 # if we training with double DQN, then the target network will produce an action with indicator from
                 # evaluation network so the Q selection should accept an `index` tensor which depends on the result of
                 # evaluation-network's selection
-                self.target_q_idx_input = tf.placeholder(tf.int32, shape=(None, None), name="DDQN_max_action_index")
-                self.target_q_action_with_idx = tf.gather_nd(self.t_q, self.target_q_idx_input)
-        
+            self.target_q_idx_input = tf.placeholder(tf.int32, shape=(None, None), name="DDQN_max_action_index")
+            self.target_q_action_with_idx = tf.gather_nd(self.t_q, self.target_q_idx_input)
+
         # === Define the process of network update ===
         with tf.variable_scope("update"):
-            self.t_w_input = {}  # record all weights' input of target network
-            self.t_w_assign_op = {}  # record all update operations
+            self.update_op = []
 
-            for name in self.e_w.keys():
-                self.t_w_input[name] = tf.placeholder(tf.float32, shape=self.t_w[name].get_shape().as_list(), name=name)
-                self.t_w_assign_op[name] = self.t_w[name].assign(self.t_w_input[name])
+            eval_params = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, self.eval_scope_name)
+            target_params = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, self.target_scope_name)
+
+            for i in range(len(target_params)):
+                self.update_op.append(tf.assign(target_params[i], eval_params[i]))
         
         # === Define the optimization ===
         with tf.variable_scope("optimization"):
@@ -134,9 +117,9 @@ class DQN(BaseModel):
             self.action_input = tf.placeholder(tf.int32, shape=(None,), name="action_input")
             
             action_one_hot = tf.one_hot(self.action_input, self.env.action_space.n, on_value=1.0, off_value=0.0, name="action_one_hot")
-            q_eval_with_act = tf.reduce_sum(self.e_q * action_one_hot, axis=1, name="q_eval_with_action")
+            self.q_eval_with_act = tf.reduce_sum(self.e_q * action_one_hot, axis=1, name="q_eval_with_action")
 
-            temp = tf.square(self.t_q_input - q_eval_with_act)
+            temp = tf.square(self.t_q_input - self.q_eval_with_act)
             self.loss = 0.5 * tf.reduce_mean(temp)
 
             # TODO: consider add variant leraning rate
@@ -146,35 +129,44 @@ class DQN(BaseModel):
     def _update(self):
         """Implement the network update
         """
-        print("[*] ---> {}th training Network Update ...".format(self.num_train + 1))
-        length = len(self.t_w)
+        self.sess.run(self.update_op)
 
-        with self.sess.as_default():
-            for i, name in enumerate(self.t_w.keys()):
-                self.t_w_assign_op[name].eval({self.t_w_input[name]: self.e_w[name].eval()})
-
-    def _train(self):
+    def _train(self, num_train):
         """Execute the training task with `mini_batch` setting.
         and this traninig module will training with game emulator"""
 
-        print("\n[*] Begin {}th training ...".format(self.num_train + 1))
+        print("\n[*] Begin #{0} training / EPS: {1:.3f} / MemorySize: {2} ...".format(num_train, self.eps, self.replay_buffer.size)
         time.sleep(0.5)
 
         loss = []
+        target_q_value = []
+        eval_q_value = []
         start_time = time.time()
 
-        for _ in tqdm.tqdm(range(self.iteration), ncols=50):
+        buffer_size = self.replay_buffer.size
+        self.iteration = (buffer_size + self.batch_size - 1) // self.batch_size
+
+        for i in tqdm.tqdm(range(self.iteration), ncols=60):
             # emulator for training
             info = self._mini_batch()
             loss.append(info["loss"])
-        
+            target_q_value.append(info["target_q"])
+            eval_q_value.append(info["eval_q"])
+            if (i + 1) % self.update_every == 0:
+                self._update()
+
         end_time = time.time()
         time.sleep(0.01)
 
         # loss record
-        self.loss_record.append(sum(loss) / len(loss))
+        mean_loss = sum(loss) / len(loss)
+        max_q, min_q = max(target_q_value[-1]), min(target_q_value[-1])
+        max_e, min_e = max(eval_q_value[-1]), min(eval_q_value[-1])
 
-        print("\n[*] Time consumption: {0:.3f}s, Average loss: {1:.6f}".format(end_time - start_time, self.loss_record[-1]))
+        self.loss_record.append(mean_loss)
+
+        print("\n[*] Time consumption: {0:.3f}s, Average loss: {1:.6f}, Max-q: {2:.6f}, Min-q: {3:.6f}, Max-e: {4:.6f}, Min-e: {5:.6f}"
+              .format(end_time - start_time, mean_loss, max_q, min_q, max_e, min_e))
         
     def _mini_batch(self):
         """Implement mini-batch training
@@ -187,80 +179,108 @@ class DQN(BaseModel):
 
         with self.sess.as_default():
             if self.use_double:
-                pred_act_batch = self.q_action.eval({self.eval_obs: data_batch.obs_next})  # get the action of next observation
-                q_value_with_max_idx = self.target_q_action_with_idx.eval({
-                    self.target_obs: data_batch.obs_next,
+                pred_act_batch = self.q_action.eval({self.input_layer: data_batch.obs_next})  # get the action of next observation
+                max_q_value = self.target_q_action_with_idx.eval({
+                    self.input_layer: data_batch.obs_next,
                     self.target_q_idx_input: [[idx, act_idx] for idx, act_idx in enumerate(pred_act_batch)]
                 })
-                target_q = (1. - data_batch.done) * data_batch.reward + q_value_with_max_idx
             else:
-                q_value = self.t_q.eval({self.target_obs: data_batch.obs_next})
-                max_q_value = np.max(q_value, axis=1)
-                target_q = (1. - data_batch.done) * data_batch.reward + max_q_value
+                t_q_value = self.t_q.eval({self.input_layer: data_batch.obs_next})
+                max_q_value = np.max(t_q_value, axis=1)
+
+        # target_q = (1. - data_batch.done) * max_q_value * self.eps + data_batch.reward
+        target_q = np.where(data_batch.done, data_batch.reward, data_batch.reward + max_q_value * self.eps)
         
-        info["loss"], _ = self.sess.run([self.loss, self.train_op], {
+        info["loss"], info["eval_q"], _ = self.sess.run([self.loss, self.q_eval_with_act, self.train_op], {
             self.t_q_input: target_q,
             self.action_input: data_batch.action,
-            self.eval_obs: data_batch.obs
+            self.input_layer: data_batch.obs
             # self.learning_rate_step: self.train_step
         })
+
+        info["target_q"] = target_q
 
         return info
 
 
-def test(env, agent, train_round):
-    test_reward_record = []
+class SuperVised(BaseModel):
+    """Implemented with supervised neural network, learning policy for agents
+    """
 
-    for episode in range(TEST_EPISODE):
-        obs = env.reset()
-        total_reward = 0
+    def __inist(self, env, config):
+        super(SuperVised, self).__init__("supervisde", config)
 
-        for _ in range(STEP):
-            # env.render()
-            action = agent.pick_action(obs, train=False)
-            obs, reward, done, _ = env.step(action)
-
-            total_reward += reward
-
-            if done:
-                break
-
-        agent.reward_record.append(total_reward)
-        test_reward_record.append(total_reward)
-
-    mess = "[*] -- Test at episode: {0} with average reward: {1:.3f}".format(train_round, sum(test_reward_record) / len(test_reward_record))
-
-    print(mess)
-
-
-def main(_config):
-    env = gym.make(ENV_NAME)
+        self._env = env
+        self._batch_size = config.batch_size
+        self._repaly_buffer = SReplayBuffer(config.batch_size, config.memory_size, 
+                                            self._env.observation_space.shape, self._env.action_space.n)
+        self._build_network()
+        self.sess = tf.Session()
+        self.sess.run(tf.global_variables_initializer())
     
-    agent = DQN(env, _config)
+    def _build_network(self):
+        act_func = tf.nn.relu
 
-    print("[*] --- Begin Emulator Training ---")
+        with tf.variable_scope("supervised"):
+            self.input_layer = tf.placeholder(tf.float32, shape=(None,) + self._env.observation_space.shape)
 
-    for episode in range(EPISODE):
+            self.l1 = tf.layers.dense(self.input_layer, units=20, activation=act_func, name="l1")
+            self.l2 = tf.layers.dense(self.l1, units=20, activation=act_func, name="l2")
+            self.l3 = tf.layers.dense(self.l2, units=10, activation=act_func, name="l3")
 
-        obs = env.reset()
+            self.pred_policy = tf.layers.dense(self.l3, units=self._env.action_space.n, use_bias=False, name="pred_layer")
+        
+        with tf.variable_scope("optimization"):
+            self.labels = tf.placeholder(tf.float32, shape=(None, self._env.action_space.n), name="labels")
 
-        # === Train ===
-        for _ in range(STEP):
-            action = agent.pick_action(obs)
-            obs_next, reward, done, _ = env.step(action)
+            # Here, we use cross-entropy to calculate the training loss
+            diff = tf.nn.softmax_cross_entropy_with_logits(labels=self.labels, logits=self.pred_policy) 
+            self.loss = tf.reduce_mean(diff)
 
-            # agent will store the newest experience into replay buffer, and training with mini-batch and off-policy
-            agent.perceive(obs, action, reward, obs_next, done)
+            self.train_op = tf.train.RMSPropOptimizer(self.learning_rate).minimize(self.loss)
+    
+    def _mini_batch(self):
+        data = self._repaly_buffer.sample()
 
-            if done:
-                break
+        loss = self.sess.run([self.loss, self.train_op], feed_dict={
+            self.input_layer: data.obs
+            self.labels: data.actions
+        })
 
-            obs = obs_next
+        return loss
+    
+    def train(self, train_num):
+        iter_time = (self.repaly_buffer.size + self._batch_size - 1) // self._batch_size
 
-        agent.train()
+        print("[* Super] Begin #{} training".format(train_num))
 
-        if (episode + 1) % _config.test_every == 0:  # test every 100 episodes
-            print("\n[*] === Enter TEST module ===")
-            test(env, agent, episode)
+        start_time = time.time()
 
-    agent.record()
+        for i in range(iter_time):
+            self.loss_record.append(self._mini_batch())
+        
+        end_time = time.time()
+
+        print("[* Super] Time concumption {0:.3f}".format(end_time - start_time))
+    
+    def update_buffer(self, observation, action):
+        self._repaly_buffer.put(observation, action)
+
+
+class NFSP(object):
+    def __init__(self, env, config):
+        self.sub = dict(dqn=DQN(env, config), sup=SuperVised(env, config))
+        self._eta = config.eta
+    
+    def train(self, train_num):
+        # 1. Get policy or best-response from DQN
+        # 2. Get policy approximation from SuperVised-Network
+        # 3. Select policy between DQN and SuperVised-Network with eta probability
+        prob = random.random(0, 1)
+
+        if prob < self._eta:
+            # Select best-response
+            pass
+        else:
+            # Select policy approximation
+            pass

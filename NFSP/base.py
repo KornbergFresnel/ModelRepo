@@ -1,16 +1,7 @@
-import inspect
 import os
 import numpy as np
 import tensorflow as tf
 import matplotlib.pyplot as plt
-
-
-def extract_attrs(config):
-    """This method can extract all non-inner attrs (start with `__`) from raw config.
-    """
-
-    return {k: v for k, v in inspect.getmembers(config)
-            if not k.startwith("__") and not callable(k)}
 
 
 class MetaData(object):
@@ -22,9 +13,12 @@ class MetaData(object):
 
 
 class ReplayBuffer(object):
+    """This replay buffer is designed for data storage of Reinforcement Learning
+    """
+
     def __init__(self, batch_size, memory_size, obs_shape):
-        self.flag = 0
-        self.size = 0
+        self._flag = 0
+        self._size = 0
 
         self.memory_size = memory_size
         self.batch_size = batch_size
@@ -33,32 +27,30 @@ class ReplayBuffer(object):
         self.action = np.empty(shape=(memory_size,), dtype=np.int32)
         self.reward = np.empty(shape=(memory_size,), dtype=np.float32)
         self.done = np.empty(shape=(memory_size,), dtype=np.bool)
+    
+    @property
+    def size(self):
+        return self._size
 
-    def put(self, obs, action, reward, obs_next, done):
-        self.flag = (self.flag + 1) % self.memory_size
-        self.size = min(self.size + 1, self.memory_size)
+    def put(self, obs, action, reward, done):
+        self.obs[self._flag, :] = obs
+        self.action[self._flag] = action
+        self.reward[self._flag] = reward
+        self.done[self._flag] = done
 
-        self.obs[self.flag, :] = obs
-        self.action[self.flag] = action
-        self.reward[self.flag] = reward
-        self.done[self.flag] = done
-
-        self.flag = (self.flag + 1) % self.memory_size
-        self.size = min(self.size + 1, self.memory_size)
-
-        # 无处安放的obs_next啊，你就现在这里暂时歇息，以后再说
-        self.obs[self.flag, :] = obs_next
+        self._flag = (self._flag + 1) % self.memory_size
+        self._size = min(self._size + 1, self.memory_size)
 
     def free_memory(self):
-        self.flag = 0
-        self.size = 0
+        self._flag = 0
+        self._size = 0
 
     def sample(self):
         """Random sample batch data from inner data
         """
         batch_data = MetaData()
 
-        idx = np.random.choice(self.size, self.batch_size)
+        idx = np.random.choice(self._size, self.batch_size)
 
         batch_data.obs = self.obs[idx]
         batch_data.action = self.action[idx]
@@ -69,11 +61,46 @@ class ReplayBuffer(object):
         return batch_data
 
 
+class SReplayBuffer(object):
+    def __init__(self, batch_size, memory_size, obs_shape, action_size):
+        self._size = 0
+        self._flag = 0
+
+        self.batch_size = batch_size
+        self._memory_size = memory_size
+
+        self.obs = np.empty(shape=(memory_size,) + obs_shape, dtype=np.float32)
+        self.action = np.empty(shape=(memory_size, action_size), dtype=np.int32)
+    
+    @property
+    def size(self):
+        return self._size
+    
+    def put(self, obs, action):
+        self.obs[self._flag, :] = obs
+        self.action[self._flag, action] = 1
+
+        self._flag = (self._flag + 1) % self._memory_size
+        self._size = min(self._size + 1, self._memory_size)
+    
+    def sample(self):
+        """Random sample batch-data from inner data"""
+        batch_data = MetaData()
+
+        idx = np.random.choice(self._size, self.batch_size)
+
+        batch_data.obs = self.obs[idx]
+        batch_data.action = self.action[idx]
+
+
 class BaseModel(object):
-    def __init__(self, config):
+    def __init__(self, name, config):
         """Initialize configuration for DNN model"""
         self._saver = None
         self.config = config
+
+        self.name = name
+
         self.sess = None
         self.loss_record = []
         self.reward_record = []
@@ -81,11 +108,11 @@ class BaseModel(object):
         self.use_double = config.use_double
         self.dueling = config.use_dueling
 
-        self.update_every = config.update_every
-        self.eps_low = config.eps_low
-        self.eps_high = config.eps_high
-        self.eps_range = config.eps_high - config.eps_low
-        self.eps_count = config.eps_count
+        self.update_every = config.UPDATE_EVERY
+        self.save_every = config.SAVE_EVERY
+
+        self.eps = config.eps_high
+        self.eps_decay = config.eps_decay
 
         self.train_step = 0
         self.start_step = 0
@@ -97,16 +124,7 @@ class BaseModel(object):
         self.learning_rate = config.learning_rate
 
         self.memory_size = config.memory_size
-        self.env_name = config.env_name
-        # === parse config as inner attributes
-        #try:
-        #    self._attrs = config.__dict__['__flag']
-        #except Exception as e:
-        #    self._attrs = extract_attrs(config)
-
-        #for attr in self._attrs:
-        #    name = attr if not attr.startwith("_") else attr[1:]
-        #    setattr(self, name, getattr(self.config, attr))
+        self.env_name = config.ENV_NAME
 
     @property
     def saver(self):
@@ -129,7 +147,7 @@ class BaseModel(object):
     def predict(self):
         pass
 
-    def train(self):
+    def train(self, num_train):
         pass
 
     def save(self, step=None):
@@ -183,4 +201,4 @@ class BaseModel(object):
         with open("data/log_reward.pkl", "wb") as f:
             pickle.dump(self.reward_record, f)
 
-        print(">> Record done!")
+        print("[* Saver] --Record done!--")
