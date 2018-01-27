@@ -14,14 +14,16 @@ from config import GeneralConfig
 REPLAY_BUFFER = []
 
 
-def play(n_round, _env, _policies, train=False):
+def play(n_round, _env, _policies, update_every=5):
     obs_n = _env.reset()
     terminate = False
 
     step_counter = 0
-    print("\n--- ROUND #{} ---\n".format(n_round))
+    reward_record = [[] for _ in range(_env.n)]
+    print("\n\n--- ROUND #{} ---".format(n_round))
+
     while not terminate and step_counter < 1000:
-        act_n = _policies.act(obs_n)
+        act_n = _policies.act(obs_n, noise=0.2)
 
         obs_n_next, reward_n, done_n, _ = _env.step(act_n)
         REPLAY_BUFFER.push(obs_n, act_n, reward_n, done_n)
@@ -30,19 +32,29 @@ def play(n_round, _env, _policies, train=False):
         terminate = any(done_n)
         step_counter += 1
 
-        if step_counter % 100 == 0:
-            print("> step: {0}, reward: {1}".format(step_counter, np.around(reward_n, decimals=6)))
+        for i in range(_env.n):
+            reward_record[i].append(reward_n[i])
 
-    if len(REPLAY_BUFFER) > REPLAY_BUFFER.batch_size:
-        loss, eval_q, time_com = _policies.train(REPLAY_BUFFER)
-        print("\n[* TRAIN] Loss{0}, eval-Q: {1}, time-Com: {2:.3f}".format(loss, eval_q, time_com))
+        if step_counter % 100 == 0:
+            print("\n> step: {0}, reward: {1}".format(step_counter, np.around(reward_n, decimals=6)))
+
+        if len(REPLAY_BUFFER) > REPLAY_BUFFER.batch_size:
+            loss, eval_q, time_com = _policies.train(REPLAY_BUFFER)
+
+            if step_counter % update_every == 0:
+                _policies.update_nets()
+
+            if step_counter % 100 == 0:
+                print("[* TRAIN] Loss{0}, eval-Q: {1}, time-Com: {2:.3f}".format(loss, eval_q, time_com))
+    
+    _policies.summary(reward_record, n_round)
         
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('-s', '--scenario', default="simple_speaker_listener.py",
                         help="Path of the scenario Python script.")
-    parser.add_argument('-n', '--n_round', type=int, default=600, help="Number of round you wanna run.")
+    parser.add_argument('-n', '--n_round', type=int, default=1000, help="Number of round you wanna run.")
     parser.add_argument('-d', '--dir', type=str, default="./models", help="Grandparent directory path to store model.")
     parser.add_argument('-e', '--every', type=int, default=10, help="Save model at each x steps")
     parser.add_argument('-l', '--load', type=int, help="Indicates the step you wanna start, file must exist")
@@ -68,7 +80,7 @@ if __name__ == "__main__":
         policies.load(args.dir, start)
 
     for i in range(start, start + args.n_round):
-        play(i, env, policies, train=True)
+        play(i, env, policies)
 
         if (i + 1) % args.every == 0:
             policies.save(args.dir, i)
