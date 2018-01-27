@@ -49,7 +49,7 @@ class Actor(BaseModel):
             
             with tf.variable_scope("target"):
                 self.target_name_scope = tf.get_variable_scope().name
-                self.t_out, self.t_variables = self._construct(self.action_space.n, self.eval_name_scope)
+                self.t_out, self.t_variables = self._construct(self.action_space.n, self.target_name_scope)
 
             with tf.variable_scope("Optimization"):
                 self.q_gradient = tf.placeholder(tf.float32, shape=(None, self.action_space.n), name="Q-gradient")
