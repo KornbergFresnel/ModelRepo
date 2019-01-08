@@ -1,6 +1,7 @@
-*/*/*.pyc
-*/__pycache__/
+*.pyc
+__pycache__/
 .idea/
-*/checkpoints/
-*/data/
-*/models/
+checkpoints/
+data/
+models/
+temp/
