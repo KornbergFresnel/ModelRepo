@@ -25,26 +25,26 @@ class Actor(BaseModel):
     def __init__(self, env, sess, name, agent_id, config):
         super().__init__(name)
 
-        self.learning_rate = config.actor_lr
+        self._lr = config.actor_lr
         self.test_every = config.test_every
-        self.decay = config.update_decay
-        self.temperature = config.temperature
+        self._tau = config.update_decay
+        self.T = config.temperature
 
         self.sess = sess
         self.env = env
         self.agent_id = agent_id
 
-        self.layers_conf = config.layers
-        self.action_space = env.action_space[agent_id]
-        self.observation_space = env.observation_space[agent_id]
-
-        self.active_func = tf.nn.relu
+        self._layers_conf = config.layers
+        self._action_space = env.action_space[agent_id]
+        self._observation_space = env.observation_space[agent_id]
 
         with tf.variable_scope("actor"):
-            self.obs_input = tf.placeholder(tf.float32, shape=(None,) + self.observation_space.shape, name="Obs")
+            self.obs_input = tf.placeholder(tf.float32, shape=(None,) + self._observation_space.shape, name="Obs")
+
             with tf.variable_scope("eval"):
                 self._e_scope = tf.get_variable_scope().name
                 self.e_out = self._construct(self.action_space.n)
+                self._act_prob = tf.nn.softmax(self.e_out / self.T)
 
             with tf.variable_scope("target"):
                 self._t_scope = tf.get_variable_scope().name
@@ -53,7 +53,7 @@ class Actor(BaseModel):
             with tf.variable_scope("Optimization"):
                 self.q_gradient = tf.placeholder(tf.float32, shape=(None, self.action_space.n), name="Q-gradient")
                 self.policy_gradients = tf.gradients(self.e_out, self.e_variables, self.q_gradient)
-                self.train_op = tf.train.AdamOptimizer(self.learning_rate).apply_gradients(
+                self.train_op = tf.train.AdamOptimizer(self._lr).apply_gradients(
                     zip(self.policy_gradients, self.e_variables)
                 )
 
@@ -67,7 +67,7 @@ class Actor(BaseModel):
 
     @property
     def e_variables(self):
-        return tf.get_collection(tf.GraphKeys.METRIC_VARIABLES, scope=self._e_scope)
+        return tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=self._e_scope)
 
     def update(self):
         self.sess.run(self._update_op)
@@ -76,24 +76,25 @@ class Actor(BaseModel):
         self.sess.run(self._soft_update_op)
 
     def _construct(self, out_dim, norm=True):
-        l1 = tf.layers.dense(self.obs_input, units=self.layers_conf[0], activation=tf.nn.relu, name="l1")
+        l1 = tf.layers.dense(self.obs_input, units=self._layers_conf[0], activation=tf.nn.relu, name="l1")
         if norm: l1 = tc.layers.layer_norm(l1)
 
-        l2 = tf.layers.dense(l1, units=self.layers_conf[1], activation=tf.nn.relu, name="l2")
+        l2 = tf.layers.dense(l1, units=self._layers_conf[1], activation=tf.nn.relu, name="l2")
         if norm: l2 = tc.layers.layer_norm(l2)
 
-        out = tf.layers.dense(l2, activation=tf.nn.softmax, units=out_dim)
+        out = tf.layers.dense(l2, units=out_dim)
 
         return out
 
     def act(self, obs_set):
-        obs_set = obs_set.reshape((1,) + obs_set.shape)
-        policy = self.sess.run(self.e_out, feed_dict={self.obs_input: obs_set})
-        return policy[0]
+        policy = self.sess.run(self._act_prob, feed_dict={self.obs_input: [obs_set]})
+        act = np.random.choice(self._action_space.n, p=policy[0])
+
+        return act
 
     def target_act(self, obs_set):
         """Return an action id -> integer"""
-        policy = self.sess.run(self.e_out, feed_dict={self.obs_input: obs_set})
+        policy = self.sess.run(self.t_out, feed_dict={self.obs_input: obs_set})
         return policy
 
     def update(self):
@@ -119,13 +120,13 @@ class Critic(BaseModel):
         # flatten action shape
         self.mul_act_dim = (sum([env.action_space[i].n for i in range(env.n)]),)
 
-        self.learning_rate = config.critic_lr
+        self._lr = config.critic_lr
         self.L2 = config.L2
         self.gamma = config.gamma
         self.layers_conf = config.layers
         self.update_every = config.update_every
         self.test_every = config.test_every
-        self.decay = config.update_decay
+        self._tau = config.update_decay
 
         self.active_func = tf.nn.relu
 
