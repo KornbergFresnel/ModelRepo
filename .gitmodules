@@ -1,0 +1,3 @@
+[submodule "ma_env"]
+	path = ma_env
+	url = https://github.com/KornbergFresnel/multiagent-particle-envs
