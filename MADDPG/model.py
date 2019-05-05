@@ -1,12 +1,45 @@
 import time
 import os
+import random
 import tensorflow as tf
 import numpy as np
 import tensorflow.contrib.distributions as tcd
 import tensorflow.contrib as tc
+
 from config import GeneralConfig
 from tools import Record
-from lib.common.memory import Buffer
+from lib.common.memory import Buffer, Transition
+
+
+class BunchBuffer(Buffer):
+    def __init__(self, n_agent, capacity):
+        super().__init__(capacity)
+
+        self.n_agent = n_agent
+        self._data = [[] for _ in range(self.n_agent)]
+        self._size = 0
+
+    def push(self, *args):
+        for i, state, action, next_state, reward, done in enumerate(zip(*args)):
+            if len(self._data[i]) < self._capacity:
+                self._data[i].append(None)
+
+            self._data[i][self._flag] = Transition(state, action, next_state, reward, done)
+            self._flag = (self._flag + 1) % self._capacity
+            self._size = min(self._size + 1, self._capacity)
+
+    def sample(self, batch_size):
+        if self._size < batch_size:
+            return None
+
+        samples = [None for _ in range(self.n_agent)]
+
+        random.seed(a=self._flag)
+        for i in range(self.n_agent):
+            tmp = random.sample(self._data[i], batch_size)
+            samples[i] = Transition(*zip(*tmp))
+
+        return samples
 
 
 class BaseModel(object):
@@ -155,7 +188,7 @@ class Critic(BaseModel):
                 weight_decay = tf.add_n([self.L2 * tf.nn.l2_loss(var) for var in self.e_variables])
                 self.t_q_input = tf.placeholder(tf.float32, shape=(None, 1), name="target-input")
                 self.loss = 0.5 * tf.reduce_mean(tf.square(self.t_q_input - self.e_q)) + weight_decay
-                self.train_op = tf.train.AdamOptimizer(self.learning_rate).minimize(self.loss)
+                self.train_op = tf.train.AdamOptimizer(self._lr).minimize(self.loss)
 
     @property
     def t_variables(self):
@@ -215,16 +248,19 @@ class Critic(BaseModel):
 
 
 class MultiAgent(object):
-    def __init__(self, env, name, batch_size=64, actor_lr=1e-4, critic_lr=1e-3, gamma=0.99, tau=0.01):
+    def __init__(self, env, name, n_agent, batch_size=64, actor_lr=1e-4, critic_lr=1e-3, gamma=0.99, tau=0.01, memory_size=10**4):
         # == Initialize ==
         self.name = name
         self.sess = tf.Session()
         self.env = env
+        self.n_agent = n_agent
 
         self.actors = []  # hold all Actors
         self.critics = []  # hold all Critics
         self.actions_dims = []  # record the action split for gradient apply
-        self.replay_buffer = []
+
+        self.replay_buffer = Buffer(memory_size)
+        self.batch_size = batch_size
 
         # == Construct Network for Each Agent ==
         with tf.variable_scope(self.name):
@@ -313,11 +349,17 @@ class MultiAgent(object):
             print("[!] Load model falied, please check {} exists".format(file_path))
             exit(1)
 
-    def train_step(self, batch):
-        loss = [0.] * self.env.n
-        obs_clus = np.concatenate(batch.obs, axis=1)
-        obs_next_clus = np.concatenate(batch.obs_next, axis=1)
-        act_clus = np.concatenate(batch.act, axis=1)
+    def train_step(self, batch_list):
+        loss = [0.] * self.n_agent
+
+        state_clus = [None for _ in range(self.n_agent)]
+        next_state_clus = [None for _ in range(self.n_agent)]
+        act_clus = [None for _ in range(self.n_agent)]
+
+        for i, batch in enumerate(batch_list):
+            state_clus[i] = np.concatenate(batch.state, axis=1)
+            next_state_clus[i] = np.concatenate(batch.next_state, axis=1)
+            act_clus[i] = np.concatenate(batch.action, axis=1)
 
         batch_act_next = []
 
@@ -327,7 +369,7 @@ class MultiAgent(object):
         batch_act_next = np.concatenate(batch_act_next, axis=1)
 
         for j in range(self.env.n):
-            batch_q = self.critics[j].calculate_target_q(obs_next_clus, batch_act_next)
+            batch_q = self.critics[j].calculate_target_q(next_state_clus, batch_act_next)
             batch_q = batch.reward[:, j] + (1. - batch.terminate[:, j]) * batch_q
 
             critic_loss = self.critics[j].train(batch_q, obs_clus, act_clus)
