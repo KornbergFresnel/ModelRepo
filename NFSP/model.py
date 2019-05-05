@@ -135,7 +135,7 @@ class DQN(BaseModel):
         """Execute the training task with `mini_batch` setting.
         and this traninig module will training with game emulator"""
 
-        print("\n[*] Begin #{0} training / EPS: {1:.3f} / MemorySize: {2} ...".format(num_train, self.eps, self.replay_buffer.size)
+        print("\n[*] Begin #{0} training / EPS: {1:.3f} / MemorySize: {2} ...".format(num_train, self.eps, self.replay_buffer.size))
         time.sleep(0.5)
 
         loss = []
@@ -243,7 +243,7 @@ class SuperVised(BaseModel):
         data = self._repaly_buffer.sample()
 
         loss = self.sess.run([self.loss, self.train_op], feed_dict={
-            self.input_layer: data.obs
+            self.input_layer: data.obs,
             self.labels: data.actions
         })
 
