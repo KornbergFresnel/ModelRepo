@@ -22,36 +22,32 @@ class BaseModel(object):
 
 
 class Actor(BaseModel):
-    def __init__(self, env, sess, name, agent_id, config):
+    def __init__(self, sess, state_space, act_space, lr=1e-4, tau=0.01 name=None, agent_id=None):
         super().__init__(name)
 
-        self._lr = config.actor_lr
-        self.test_every = config.test_every
-        self._tau = config.update_decay
-        self.T = config.temperature
+        self._lr = lr
 
         self.sess = sess
-        self.env = env
         self.agent_id = agent_id
 
-        self._layers_conf = config.layers
-        self._action_space = env.action_space[agent_id]
-        self._observation_space = env.observation_space[agent_id]
+        self._action_space = act_space
+        self._observation_space = state_space
 
         with tf.variable_scope("actor"):
             self.obs_input = tf.placeholder(tf.float32, shape=(None,) + self._observation_space.shape, name="Obs")
 
             with tf.variable_scope("eval"):
-                self._e_scope = tf.get_variable_scope().name
-                self.e_out = self._construct(self.action_space.n)
-                self._act_prob = tf.nn.softmax(self.e_out / self.T)
-                # TODO(ming): need to check
+                self._eval_scope = tf.get_variable_scope().name
+                self.eval_net = self._construct(self._action_space.n)
+                self._act_prob = tf.nn.softmax(self.eval_net)
+
                 self._act_input = tf.placeholder(tf.int32, shape=(None,), name="act-input")
                 self._act_tf = tf.one_hot(self._act_input, self._action_space.n) * self._act_prob
 
+            # !!!Deprecated
             with tf.variable_scope("target"):
-                self._t_scope = tf.get_variable_scope().name
-                self.t_out = self._construct(self.action_space.n)
+                self._target_scope = tf.get_variable_scope().name
+                self.t_out = self._construct(self._action_space.n)
 
             with tf.variable_scope("Update"):  # smooth average update process
                 self._update_op = [tf.assign(t_var, e_var) for t_var, e_var in zip(self.t_variables, self.e_variables)]
@@ -59,21 +55,26 @@ class Actor(BaseModel):
 
     @property
     def t_variables(self):
-        return tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=self._t_scope)
+        raise DeprecationWarning
+        # return tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=self._target_scope)
 
     @property
     def e_variables(self):
-        return tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=self._e_scope)
+        return tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=self._eval_scope)
 
     @property
     def act_tensor(self):
         return self._act_tf
 
+    @property
+    def obs_tensor(self):
+        return self.obs_input
+
     def _construct(self, out_dim, norm=True):
-        l1 = tf.layers.dense(self.obs_input, units=self._layers_conf[0], activation=tf.nn.relu, name="l1")
+        l1 = tf.layers.dense(self.obs_input, units=100, activation=tf.nn.relu, name="l1")
         if norm: l1 = tc.layers.layer_norm(l1)
 
-        l2 = tf.layers.dense(l1, units=self._layers_conf[1], activation=tf.nn.relu, name="l2")
+        l2 = tf.layers.dense(l1, units=100, activation=tf.nn.relu, name="l2")
         if norm: l2 = tc.layers.layer_norm(l2)
 
         out = tf.layers.dense(l2, units=out_dim)
@@ -88,46 +89,47 @@ class Actor(BaseModel):
             self._train_op = optimizer.apply_gradients(grad_vars)
 
     def update(self):
-        self.sess.run(self._update_op)
+        raise DeprecationWarning
+        # self.sess.run(self._update_op)
 
     def soft_udpate(self):
         self.sess.run(self._soft_update_op)
 
-    def act(self, obs_set):
-        policy = self.sess.run(self._act_prob, feed_dict={self.obs_input: [obs_set]})
+    def act(self, obs):
+        policy = self.sess.run(self._act_prob, feed_dict={self.obs_input: [obs]})
         act = np.random.choice(self._action_space.n, p=policy[0])
 
         return act
 
-    def target_act(self, obs_set):
+    def target_act(self, obs):
         """Return an action id -> integer"""
-        policy = self.sess.run(self.t_out, feed_dict={self.obs_input: obs_set})
-        return policy
-
-    def update(self):
-        self.sess.run(self.update_op)
+        raise DeprecationWarning
+        # policy = self.sess.run(self.t_out, feed_dict={self.obs_input: obs_set})
+        # return policy
 
     def train(self, obs, action_gradients):
-        self.sess.run(self.train_op, feed_dict={
+        # TODO(ming): need to refine
+        self.sess.run(self._train_op, feed_dict={
             self.obs_input: obs,
             self.q_gradient: action_gradients
         })
 
 
 class Critic(BaseModel):
-    def __init__(self, env, sess, name, agent_id, config, multi_act_phs):
+    def __init__(self, sess, multi_obs_phs, multi_act_phs, lr=1e-3, name=None, agent_id=None):
         super().__init__(name)
 
         self.sess = sess
-        self.env = env
         self.agent_id = agent_id
 
         # flatten observation shape
-        self.mul_obs_dim = (sum([len(env.observation_callback(env.agents[i], env.world)) for i in range(env.n)]),)
+        # self.mul_obs_dim = (sum([len(env.observation_callback(env.agents[i], env.world)) for i in range(env.n)]),)
+        self.mul_obs_dim = None
         # flatten action shape
-        self.mul_act_dim = (sum([env.action_space[i].n for i in range(env.n)]),)
+        # self.mul_act_dim = (sum([env.action_space[i].n for i in range(env.n)]),)
+        self.mul_act_dim = None
 
-        self._lr = config.critic_lr
+        self._lr = lr
         self.L2 = config.L2
         self.gamma = config.gamma
         self.layers_conf = config.layers
@@ -220,12 +222,13 @@ class MultiAgent(object):
         self.actors = []  # hold all Actors
         self.critics = []  # hold all Critics
         self.actions_dims = []  # record the action split for gradient apply
+        self.replay_buffer = []
 
         # == Construct Network for Each Agent ==
         with tf.variable_scope(self.name):
             for agent_id in range(self.env.n):
                 with tf.name_scope(name + "_{}".format(agent_id)):
-                    self.actor.append(Actor(env, self.sess, name, agent_id, config))
+                    self.actor.append(Actor(env, self.sess, name, agent_id))
 
             # collect action outputs of all actors
             ori_act_phs = [actor.act_tensor for actor in self.actor]
