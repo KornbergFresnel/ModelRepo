@@ -6,6 +6,7 @@ import numpy as np
 import tensorflow.contrib as tc
 
 from lib.common.memory import Buffer, Transition
+from lib.tools import flatten, softmax
 
 
 class BunchBuffer(Buffer):
@@ -16,14 +17,17 @@ class BunchBuffer(Buffer):
         self._data = [[] for _ in range(self.n_agent)]
         self._size = 0
 
+    def __len__(self):
+        return self._size
+
     def push(self, *args):
-        for i, state, action, next_state, reward, done in enumerate(zip(*args)):
+        for i, (state, action, next_state, reward, done) in enumerate(zip(*args)):
             if len(self._data[i]) < self._capacity:
                 self._data[i].append(None)
 
             self._data[i][self._flag] = Transition(state, action, next_state, reward, done)
-            self._flag = (self._flag + 1) % self._capacity
-            self._size = min(self._size + 1, self._capacity)
+        self._flag = (self._flag + 1) % self._capacity
+        self._size = min(self._size + 1, self._capacity)
 
     def sample(self, batch_size):
         if self._size < batch_size:
@@ -68,25 +72,28 @@ class Actor(BaseModel):
         self._loss = None
         self._train_op = None
 
-        with tf.variable_scope("actor"):
-            self.obs_input = tf.placeholder(tf.float32, shape=(None,) + self._observation_space.shape, name="Obs")
+        self.act_dim = flatten(self._action_space)
 
-            with tf.variable_scope("eval"):
-                self._eval_scope = tf.get_variable_scope().name
-                self.eval_net = self._construct(self._action_space.n)
-                self._act_prob = tf.nn.softmax(self.eval_net)
+        self.obs_input = tf.placeholder(tf.float32, shape=(None,) + self._observation_space, name="Obs")
 
-                self._act_input = tf.placeholder(tf.int32, shape=(None,), name="act-input")
-                self._act_tf = tf.one_hot(self._act_input, self._action_space.n) * self._act_prob
+        with tf.variable_scope("eval"):
+            self._eval_scope = tf.get_variable_scope().name
+            self.eval_net = self._construct(self.act_dim)
+            self._act_prob = tf.nn.softmax(self.eval_net)
 
-            # !!!Deprecated
-            with tf.variable_scope("target"):
-                self._target_scope = tf.get_variable_scope().name
-                self.t_out = self._construct(self._action_space.n)
+            self._act_input = tf.placeholder(tf.int32, shape=(None,), name="act-input")
 
-            with tf.variable_scope("Update"):  # smooth average update process
-                self._update_op = [tf.assign(t_var, e_var) for t_var, e_var in zip(self.t_variables, self.e_variables)]
-                self._soft_update_op = [tf.assign(t_var, self._tau * e_var + (1. - self._tau) * t_var) for t_var, e_var in zip(self.t_variables, self.e_variables)]
+            clip_value = tf.clip_by_value(self._act_prob / tf.stop_gradient(self._act_prob), 0.99, 1.)
+            self._act_tf = tf.one_hot(tf.argmax(self._act_prob, axis=1), self.act_dim) * clip_value
+
+        with tf.variable_scope("target"):
+            self._target_scope = tf.get_variable_scope().name
+            self.t_out = self._construct(self.act_dim)
+            self.t_policy = tf.nn.softmax(self.t_out)
+
+        with tf.name_scope("Update"):  # smooth average update process
+            self._update_op = [tf.assign(t_var, e_var) for t_var, e_var in zip(self.t_variables, self.e_variables)]
+            self._soft_update_op = [tf.assign(t_var, self._tau * e_var + (1. - self._tau) * t_var) for t_var, e_var in zip(self.t_variables, self.e_variables)]
 
     @property
     def t_variables(self):
@@ -129,22 +136,29 @@ class Actor(BaseModel):
         self.sess.run(self._soft_update_op)
 
     def act(self, obs):
-        policy = self.sess.run(self._act_prob, feed_dict={self.obs_input: [obs]})
-        act = np.random.choice(self._action_space.n, p=policy[0])
+        policy_logits = self.sess.run(self.eval_net, feed_dict={self.obs_input: [obs]})
+        # act = np.random.choice(self.act_dim, p=policy[0])
 
-        return act
+        return policy_logits[0]
 
-    def target_act(self, obs):
+    def target_act(self, obs, one_hot=False):
         """ Return an action id -> integer """
 
-        policy = self.sess.run(self.t_out, feed_dict={self.obs_input: obs})
+        policy = self.sess.run(self.t_policy, feed_dict={self.obs_input: obs})
+        act = np.argmax(policy, axis=1)
 
-        return policy
+        if one_hot:
+            return np.eye(*policy.shape)[act]
+        else:
+            return act
 
-    def train(self, obs):
-        loss, _ = self.sess.run([self._loss, self._train_op], feed_dict={
-            self.obs_input: obs
-        })
+    def train(self, obs, obs_clus, mul_obs_phs):
+        # TODO(ming): in progress
+        feed_dict = dict()
+        feed_dict.update(zip(mul_obs_phs, obs_clus))
+        feed_dict[self.obs_input] = obs
+
+        loss, _ = self.sess.run([self._loss, self._train_op], feed_dict=feed_dict)
 
         return loss
 
@@ -166,34 +180,33 @@ class Critic(BaseModel):
         self.L2 = 0.
         self.gamma = gamma
 
-        with tf.variable_scope("critic"):
-            self.multi_obs_phs = multi_obs_phs
-            self.multi_act_phs = multi_act_phs
+        self.multi_obs_phs = multi_obs_phs
+        self.multi_act_phs = multi_act_phs
 
-            obs_input = tf.concat(multi_obs_phs, axis=1, name="obs-clus-input")
-            act_input = tf.concat(multi_act_phs, axis=1, name="act-clus-input")
+        obs_input = tf.concat(multi_obs_phs, axis=1, name="obs-clus-input")
+        act_input = tf.concat(multi_act_phs, axis=1, name="act-clus-input")
 
-            self.input = tf.concat([obs_input, act_input], axis=1, name="concat-input")
-            self.target_input = None
+        self.input = tf.concat([obs_input, act_input], axis=1, name="concat-input")
+        self.target_input = tf.concat([obs_input, act_input], axis=1, name="target-concat-input")
 
-            with tf.variable_scope("eval"):
-                self._e_scope = tf.get_variable_scope().name
-                self.e_q = self._construct(self.input)
+        with tf.variable_scope("eval"):
+            self._e_scope = tf.get_variable_scope().name
+            self.e_q = self._construct(self.input)
 
-            with tf.variable_scope("target"):
-                self._t_scope = tf.get_variable_scope().name
-                self.t_q = self._construct(self.target_input)
+        with tf.variable_scope("target"):
+            self._t_scope = tf.get_variable_scope().name
+            self.t_q = self._construct(self.target_input)
 
-            with tf.name_scope("Update"):  # smooth average update process
-                self._update_op = [tf.assign(t_var, e_var) for t_var, e_var in zip(self.t_variables, self.e_variables)]
-                self._soft_update_op = [tf.assign(t_var, self._tau * e_var + (1. - self._tau) * t_var) for t_var, e_var
-                                        in zip(self.t_variables, self.e_variables)]
+        with tf.name_scope("Update"):  # smooth average update process
+            self._update_op = [tf.assign(t_var, e_var) for t_var, e_var in zip(self.t_variables, self.e_variables)]
+            self._soft_update_op = [tf.assign(t_var, self._tau * e_var + (1. - self._tau) * t_var) for t_var, e_var
+                                    in zip(self.t_variables, self.e_variables)]
 
-            with tf.variable_scope("Optimization"):
-                weight_decay = tf.add_n([self.L2 * tf.nn.l2_loss(var) for var in self.e_variables])
-                self.t_q_input = tf.placeholder(tf.float32, shape=(None, 1), name="target-input")
-                self.loss = 0.5 * tf.reduce_mean(tf.square(self.t_q_input - self.e_q)) + weight_decay
-                self.train_op = tf.train.AdamOptimizer(self._lr).minimize(self.loss)
+        with tf.variable_scope("Optimization"):
+            weight_decay = tf.add_n([self.L2 * tf.nn.l2_loss(var) for var in self.e_variables])
+            self.t_q_input = tf.placeholder(tf.float32, shape=(None, 1), name="target-input")
+            self.loss = 0.5 * tf.reduce_mean(tf.square(self.t_q_input - self.e_q)) + weight_decay
+            self.train_op = tf.train.AdamOptimizer(self._lr).minimize(self.loss)
 
     @property
     def t_variables(self):
@@ -201,7 +214,7 @@ class Critic(BaseModel):
 
     @property
     def e_variables(self):
-        return tf.get_collection(tf.GraphKeys.METRIC_VARIABLES, scope=self._e_scope)
+        return tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=self._e_scope)
 
     @property
     def value(self):
@@ -284,29 +297,33 @@ class MultiAgent(object):
         self.critics = []  # hold all Critics
         self.actions_dims = []  # record the action split for gradient apply
 
-        self.replay_buffer = Buffer(memory_size)
+        self.replay_buffer = BunchBuffer(n_agent, memory_size)
         self.batch_size = batch_size
 
         # == Construct Network for Each Agent ==
         with tf.variable_scope(self.name):
-            for agent_id in range(self.env.n):
-                with tf.name_scope("policy_{}_{}".format(name, agent_id)):
-                    self.actors.append(Actor(self.sess, state_space=None, act_space=None, lr=actor_lr, tau=tau,
-                                             name=name, agent_id=agent_id))
+            for i in range(self.env.n):
+                print("initialize actor for agent {} ...".format(i))
+                with tf.variable_scope("policy_{}_{}".format(name, i)):
+                    obs_space, act_space = env.observation_space[i].shape, (env.action_space[i].n,)
+                    self.actors.append(Actor(self.sess, state_space=obs_space, act_space=act_space, lr=actor_lr, tau=tau,
+                                             name=name, agent_id=i))
 
             # collect action outputs of all actors
             self.obs_phs = [actor.obs_tensor for actor in self.actors]
             self.act_phs = [actor.act_tensor for actor in self.actors]
+            self.mask_act_phs = [None for _ in range(self.n_agent)]
 
-            for agent_id in range(self.env.n):
-                with tf.name_scope("critic_{}_{}".format(name, agent_id)):
-                    act_phs = self._mask_other_act_phs(self.act_phs, agent_id)  # stop gradient
-                    self.critics.append(Critic(self.sess, self.obs_phs, act_phs, lr=critic_lr, name=name, agent_id=agent_id))
-                    self.actions_dims.append(self.env.action_space[agent_id].n)
+            for i in range(self.env.n):
+                print("initialize critic for agent {} ...".format(i))
+                self.mask_act_phs[i] = self._mask_other_act_phs(self.act_phs, i)  # stop gradient
+                with tf.variable_scope("critic_{}_{}".format(name, i)):
+                    self.critics.append(Critic(self.sess, self.obs_phs, self.mask_act_phs[i], lr=critic_lr, name=name, agent_id=i))
+                    self.actions_dims.append(self.env.action_space[i].n)
 
             # set optimizer for actors
-            for actor, critic in zip(self.actors, self.critics):
-                with tf.name_scope("optimizer_{}_{}".format(name, agent_id)):
+            for i, (actor, critic) in enumerate(zip(self.actors, self.critics)):
+                with tf.variable_scope("optimizer_{}_{}".format(name, i)):
                     actor.set_optimization(critic)
 
     def init(self):
@@ -343,7 +360,11 @@ class MultiAgent(object):
         actions = []
         for i, (obs, agent) in enumerate(zip(obs_set, self.actors)):
             n = self.actions_dims[i]
-            actions.append(agent.act(obs) + np.random.randn(n) * noise)
+
+            logits = agent.act(obs) + np.random.randn(n) * noise
+            policy = softmax(logits)
+
+            actions.append(np.random.choice(n, p=policy))
         return actions
 
     def async_update(self):
@@ -400,14 +421,16 @@ class MultiAgent(object):
 
         # re-construct samples
         for i, batch in enumerate(batch_list):
-            state_clus[i] = np.concatenate(batch.state, axis=1)
-            next_state_clus[i] = np.concatenate(batch.next_state, axis=1)
-            act_clus[i] = np.concatenate(batch.action, axis=1)
+            state_clus[i] = np.stack(batch.state)
+            next_state_clus[i] = np.stack(batch.next_state)
+
+            acts = np.stack(batch.action)
+            act_clus[i] = np.eye(acts.shape[0], self.env.action_space[i].n)[acts]
 
         # get target action
         next_act_clus = [None for _ in range(self.n_agent)]
         for i, batch in enumerate(batch_list):
-            next_act_clus[i].append(self.actors[i].target_act(batch.next_state))
+            next_act_clus[i] = self.actors[i].target_act(batch.next_state, one_hot=True)
 
         # train critic
         for i, batch in enumerate(batch_list):
@@ -418,7 +441,7 @@ class MultiAgent(object):
 
         # train actor
         for i, batch in enumerate(batch_list):
-            a_loss[i] = self.actors[i].train(batch.state)
+            a_loss[i] = self.actors[i].train(batch.state, state_clus, self.mask_act_phs[i])
 
         return a_loss, c_loss
 
@@ -428,10 +451,16 @@ class MultiAgent(object):
         :return: mean_a_loss, mean_c_loss: mean of actor loss and critic loss for N agents
         """
 
+        if len(self.replay_buffer) < self.batch_size:
+            return None
+
         n_batch = 1
+
+        print("-- training: [num_replay]: {} [n_batch]: {}".format(len(self.replay_buffer), n_batch))
         mean_a_loss, mean_c_loss = [0.] * self.n_agent, [0.] * self.n_agent
 
         for i in range(n_batch):
+            # print("--- train batch #{} ...".format(i))
             batch_list = self.replay_buffer.sample(self.batch_size)
             a_loss, c_loss = self.train_step(batch_list)
 

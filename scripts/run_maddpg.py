@@ -6,9 +6,14 @@ import tensorflow as tf
 import numpy as np
 
 sys.path.insert(1, os.path.join(sys.path[0], '..'))
+sys.path.insert(1, os.path.join(sys.path[0], '../lib/ma_env'))
 
 from lib import multiagent
 from MADDPG.model import MultiAgent
+
+
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+tf.logging.set_verbosity(tf.logging.ERROR)
 
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -19,12 +24,12 @@ MODEL_BACK_UP = os.path.join(BASE_DIR, 'data')
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=None)
     parser.add_argument('--name', type=str, default='maddpg', help='Naming for logging.')
-    parser.add_argument('--scenario', type=str, default='push_ball.py',
+    parser.add_argument('--scenario', type=str, default='simple_push.py',
                         help='Path of the scenario Python script (default=push_ball.py).')
 
     parser.add_argument('--n_agent', type=int, default=2, help='Set the number of agents (default=2')
     parser.add_argument('--len_episode', type=int, default=25, help='Time horizon limitation (default=25).')
-    parser.add_argument('--n_train', type=int, default=10000, help='Training round.')
+    parser.add_argument('--n_train', type=int, default=100, help='Training round.')
     parser.add_argument('--eval_interval', type=int, default=50, help='Evaluation episode interval (default=50).')
     parser.add_argument('--batch_size', type=int, default=64, help='Batch size (default=64).')
     parser.add_argument('--memory_size', type=int, default=10**5, help='Memory size (default=10**5).')
@@ -42,7 +47,7 @@ if __name__ == '__main__':
     # =========================== initialize environment =========================== #
     step, steps_limit = 0, args.len_episode * args.n_train
     scenario = multiagent.scenarios.load(args.scenario).Scenario()
-    world = scenario.make_world(num_agents=args.n_agent)
+    world = scenario.make_world(num_agents=args.n_agent, world_dim_c=1, num_landmarks=1, num_adversaries=args.n_agent // 2)
 
     env = multiagent.environment.MultiAgentEnv(world, scenario.reset_world, scenario.reward, scenario.observation,
                                                info_callback=None, shared_viewer=True)
@@ -62,7 +67,7 @@ if __name__ == '__main__':
         summary_r[i] = tf.placeholder(tf.float32, None)
         tf.summary.scalar('Episode-Reward-{}'.format(i), summary_r[i])
 
-    summary_dict = { 'reward': summary_r }
+    summary_dict = {'reward': summary_r}
 
     if not args.render:
         summary_a_loss, summary_c_loss = [None for _ in range(env.n)], [None for _ in range(env.n)]
@@ -99,7 +104,7 @@ if __name__ == '__main__':
     episode_r_n = [0. for _ in range(env.n)]
 
     # update this flag every `len_episode * eval_interval` steps, if it is true, then no training and data collection
-    is_evaluate = True
+    is_evaluate = False
 
     while step < steps_limit:
         act_n = maddpg.act(obs_n)
@@ -133,7 +138,7 @@ if __name__ == '__main__':
                 feed_dict.update(zip(summary_dict['reward'], episode_r_n))
                 episode_r_n = [0. for _ in range(env.n)]
 
-            if not args.render or is_evaluate:
+            if not args.render and is_evaluate:
                 a_loss = map(lambda x: sum(x) / len(x), a_loss)
                 c_loss = map(lambda x: sum(x) / len(x), c_loss)
 
@@ -143,10 +148,10 @@ if __name__ == '__main__':
                 a_loss = [[] for _ in range(env.n)]
                 c_loss = [[] for _ in range(env.n)]
 
-            summary = sess.run(merged, feed_dict=feed_dict)
-            summary_writer.add_summary(summary, (step - 1) // args.len_episode)
+                maddpg.save(MODEL_BACK_UP, step // args.len_episode)
+
+            if args.render or is_evaluate:
+                summary = sess.run(merged, feed_dict=feed_dict)
+                summary_writer.add_summary(summary, (step - 1) // args.len_episode)
 
             is_evaluate = (step // args.len_episode % args.eval_interval == 0)
-
-            if not args.render and is_evaluate:
-                maddpg.save(MODEL_BACK_UP, step // args.len_episode)
