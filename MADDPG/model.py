@@ -6,6 +6,7 @@ import tensorflow.contrib.distributions as tcd
 import tensorflow.contrib as tc
 from config import GeneralConfig
 from tools import Record
+from lib.common.memory import Buffer
 
 
 class BaseModel(object):
@@ -22,10 +23,11 @@ class BaseModel(object):
 
 
 class Actor(BaseModel):
-    def __init__(self, sess, state_space, act_space, lr=1e-4, tau=0.01 name=None, agent_id=None):
+    def __init__(self, sess, state_space, act_space, lr=1e-4, tau=0.01, name=None, agent_id=None):
         super().__init__(name)
 
         self._lr = lr
+        self._tau = tau
 
         self.sess = sess
         self.agent_id = agent_id
@@ -55,8 +57,7 @@ class Actor(BaseModel):
 
     @property
     def t_variables(self):
-        raise DeprecationWarning
-        # return tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=self._target_scope)
+        return tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=self._target_scope)
 
     @property
     def e_variables(self):
@@ -89,8 +90,7 @@ class Actor(BaseModel):
             self._train_op = optimizer.apply_gradients(grad_vars)
 
     def update(self):
-        raise DeprecationWarning
-        # self.sess.run(self._update_op)
+        self.sess.run(self._update_op)
 
     def soft_udpate(self):
         self.sess.run(self._soft_update_op)
@@ -103,20 +103,18 @@ class Actor(BaseModel):
 
     def target_act(self, obs):
         """Return an action id -> integer"""
-        raise DeprecationWarning
-        # policy = self.sess.run(self.t_out, feed_dict={self.obs_input: obs_set})
-        # return policy
+        policy = self.sess.run(self.t_out, feed_dict={self.obs_input: obs_set})
+        return policy
 
-    def train(self, obs, action_gradients):
+    def train(self, obs):
         # TODO(ming): need to refine
         self.sess.run(self._train_op, feed_dict={
-            self.obs_input: obs,
-            self.q_gradient: action_gradients
+            self.obs_input: obs
         })
 
 
 class Critic(BaseModel):
-    def __init__(self, sess, multi_obs_phs, multi_act_phs, lr=1e-3, name=None, agent_id=None):
+    def __init__(self, sess, multi_obs_phs, multi_act_phs, lr=1e-3, gamma=0.98, tau=0.01, name=None, agent_id=None):
         super().__init__(name)
 
         self.sess = sess
@@ -130,16 +128,12 @@ class Critic(BaseModel):
         self.mul_act_dim = None
 
         self._lr = lr
-        self.L2 = config.L2
-        self.gamma = config.gamma
-        self.layers_conf = config.layers
-        self.update_every = config.update_every
-        self.test_every = config.test_every
-        self._tau = config.update_decay
-
-        self.active_func = tf.nn.relu
+        self._tau = 0.01
+        self.L2 = 0.
+        self.gamma = gamma
 
         with tf.variable_scope("critic"):
+            # TODO(ming): transform the list of tensor into TensorArray, both for obs and act
             self.mul_obs_input = tf.placeholder(tf.float32, shape=(None,) + self.mul_obs_dim, name="obs-input")
             self.mul_act_input = tf.concat(multi_act_phs, axis=1, name="act-input")
             self.input = tf.concat([self.mul_obs_input, self.mul_act_input], axis=1, name="concat-input")
@@ -175,11 +169,19 @@ class Critic(BaseModel):
     def value(self):
         return self.e_q
 
+    @property
+    def obs_cluster_ph(self):
+        return self.mul_obs_input
+
+    @property
+    def act_cluster_ph(self):
+        return self.mul_act_input
+
     def _construct(self, input_ph, norm=True):
-        l1 = tf.layers.dense(input_ph, units=self.layers_conf[0], activation=tf.nn.relu, name="l1")
+        l1 = tf.layers.dense(input_ph, units=100, activation=tf.nn.relu, name="l1")
         if norm: l1 = tc.layers.layer_norm(l1)
 
-        l2 = tf.layers.dense(l1, units=self.layers_conf[1], activation=tf.nn.relu, name="l2")
+        l2 = tf.layers.dense(l1, units=100, activation=tf.nn.relu, name="l2")
         if norm: l2 = tc.layers.layer_norm(l2)
 
         out = tf.layers.dense(l2, units=1, name="Q")
@@ -213,7 +215,7 @@ class Critic(BaseModel):
 
 
 class MultiAgent(object):
-    def __init__(self, env, name):
+    def __init__(self, env, name, batch_size=64, actor_lr=1e-4, critic_lr=1e-3, gamma=0.99, tau=0.01):
         # == Initialize ==
         self.name = name
         self.sess = tf.Session()
@@ -227,25 +229,26 @@ class MultiAgent(object):
         # == Construct Network for Each Agent ==
         with tf.variable_scope(self.name):
             for agent_id in range(self.env.n):
-                with tf.name_scope(name + "_{}".format(agent_id)):
-                    self.actor.append(Actor(env, self.sess, name, agent_id))
+                with tf.name_scope("policy_{}_{}".format(name, agent_id)):
+                    self.actors.append(Actor(env, self.sess, name, agent_id))
 
             # collect action outputs of all actors
-            ori_act_phs = [actor.act_tensor for actor in self.actor]
+            ori_act_and_obs_phs = [(actor.act_tensor, actor.obs_tensor) for actor in self.actors]
 
             for agent_id in range(self.env.n):
-                with tf.name_scope(name + "_{}".format(agent_id)):
-                    act_phs = self._mask_other_act_phs(ori_act_phs, agent_id)
-                    self.critics.append(Critic(env, self.sess, name, agent_id, config, act_phs))
+                with tf.name_scope("critic_{}_{}".format(name, agent_id)):
+                    act_phs = self._mask_other_act_phs(ori_act_and_obs_phs[0], agent_id)
+                    self.critics.append(Critic(env, self.sess, name, agent_id, act_phs))
                     self.actions_dims.append(self.env.action_space[agent_id].n)
 
             # set optimization for actors
             for actor, critic in zip(self.actors, self.critics):
-                with tf.name_scope(name + "_{}".format(agent_id)):
+                with tf.name_scope("optimizer_{}_{}".format(name, agent_id)):
                     actor.set_optimization(critic)
 
         self.sess.run(tf.global_variables_initializer())
 
+        # hard sync
         for i in range(self.env.n):
             self.actors[i].update()
             self.critics[i].update()
