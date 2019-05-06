@@ -5,3 +5,4 @@ checkpoints/
 data/
 models/
 temp/
+log/
