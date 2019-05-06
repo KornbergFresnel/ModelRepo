@@ -84,7 +84,7 @@ class Actor(BaseModel):
             self._act_input = tf.placeholder(tf.int32, shape=(None,), name="act-input")
 
             clip_value = tf.clip_by_value(self._act_prob / tf.stop_gradient(self._act_prob), 0.99, 1.)
-            self._act_tf = tf.one_hot(tf.argmax(self._act_prob, axis=1), self.act_dim) * clip_value
+            self._act_tf = tf.one_hot(self._act_input, self.act_dim) * clip_value
 
         with tf.variable_scope("target"):
             self._target_scope = tf.get_variable_scope().name
@@ -105,7 +105,7 @@ class Actor(BaseModel):
 
     @property
     def act_tensor(self):
-        return self._act_tf
+        return self._act_input, self._act_tf
 
     @property
     def obs_tensor(self):
@@ -137,8 +137,6 @@ class Actor(BaseModel):
 
     def act(self, obs):
         policy_logits = self.sess.run(self.eval_net, feed_dict={self.obs_input: [obs]})
-        # act = np.random.choice(self.act_dim, p=policy[0])
-
         return policy_logits[0]
 
     def target_act(self, obs, one_hot=False):
@@ -152,19 +150,14 @@ class Actor(BaseModel):
         else:
             return act
 
-    def train(self, obs, obs_clus, mul_obs_phs):
-        # TODO(ming): in progress
-        feed_dict = dict()
-        feed_dict.update(zip(mul_obs_phs, obs_clus))
-        feed_dict[self.obs_input] = obs
-
+    def train(self, feed_dict):
         loss, _ = self.sess.run([self._loss, self._train_op], feed_dict=feed_dict)
-
+        self.soft_update()
         return loss
 
 
 class Critic(BaseModel):
-    def __init__(self, sess, multi_obs_phs, multi_act_phs, lr=1e-3, gamma=0.98, tau=0.01, name=None, agent_id=None):
+    def __init__(self, sess, multi_obs_phs, multi_act_phs, multi_act_tfs, lr=1e-3, gamma=0.98, tau=0.01, name=None, agent_id=None):
         super().__init__(name)
 
         self.sess = sess
@@ -177,14 +170,14 @@ class Critic(BaseModel):
 
         self._lr = lr
         self._tau = tau
-        self.L2 = 0.
+        self.L2 = 0.5
         self.gamma = gamma
 
         self.multi_obs_phs = multi_obs_phs
         self.multi_act_phs = multi_act_phs
 
         obs_input = tf.concat(multi_obs_phs, axis=1, name="obs-clus-input")
-        act_input = tf.concat(multi_act_phs, axis=1, name="act-clus-input")
+        act_input = tf.concat(multi_act_tfs, axis=1, name="act-clus-input")
 
         self.input = tf.concat([obs_input, act_input], axis=1, name="concat-input")
         self.target_input = tf.concat([obs_input, act_input], axis=1, name="target-concat-input")
@@ -203,10 +196,13 @@ class Critic(BaseModel):
                                     in zip(self.t_variables, self.e_variables)]
 
         with tf.variable_scope("Optimization"):
-            weight_decay = tf.add_n([self.L2 * tf.nn.l2_loss(var) for var in self.e_variables])
+            # weight_decay = tf.add_n([self.L2 * tf.nn.l2_loss(var) for var in self.e_variables])
             self.t_q_input = tf.placeholder(tf.float32, shape=(None, 1), name="target-input")
-            self.loss = 0.5 * tf.reduce_mean(tf.square(self.t_q_input - self.e_q)) + weight_decay
-            self.train_op = tf.train.AdamOptimizer(self._lr).minimize(self.loss)
+            self.loss = 0.5 * tf.reduce_mean(tf.square(self.t_q_input - self.e_q))
+
+            optimizer = tf.train.AdamOptimizer(self._lr)
+            grad_vars = optimizer.compute_gradients(self.loss, self.e_variables)
+            self.train_op = optimizer.apply_gradients(grad_vars)
 
     @property
     def t_variables(self):
@@ -281,6 +277,8 @@ class Critic(BaseModel):
 
         _, loss = self.sess.run([self.train_op, self.loss], feed_dict=feed_dict)
 
+        self.soft_update()
+
         return loss
 
 
@@ -311,14 +309,18 @@ class MultiAgent(object):
 
             # collect action outputs of all actors
             self.obs_phs = [actor.obs_tensor for actor in self.actors]
-            self.act_phs = [actor.act_tensor for actor in self.actors]
-            self.mask_act_phs = [None for _ in range(self.n_agent)]
+            act_phs_and_tf = [actor.act_tensor for actor in self.actors]
+
+            self.act_phs = list(map(lambda x: x[0], act_phs_and_tf))
+            act_tfs = list(map(lambda x: x[1], act_phs_and_tf))
+
+            # self.mask_act_phs = [None for _ in range(self.n_agent)]
 
             for i in range(self.env.n):
                 print("initialize critic for agent {} ...".format(i))
-                self.mask_act_phs[i] = self._mask_other_act_phs(self.act_phs, i)  # stop gradient
+                mask_act_tfs = self._mask_other_act_phs(act_tfs, i)  # stop gradient
                 with tf.variable_scope("critic_{}_{}".format(name, i)):
-                    self.critics.append(Critic(self.sess, self.obs_phs, self.mask_act_phs[i], lr=critic_lr, name=name, agent_id=i))
+                    self.critics.append(Critic(self.sess, self.obs_phs, self.act_phs, mask_act_tfs, lr=critic_lr, name=name, agent_id=i))
                     self.actions_dims.append(self.env.action_space[i].n)
 
             # set optimizer for actors
@@ -345,6 +347,7 @@ class MultiAgent(object):
 
         res = []
         for i, ph in enumerate(act_phs):
+            # ph = tf.reshape(tf.dtypes.cast(ph, tf.float32), (-1, 1))
             if agent_id == i:
                 res.append(ph)
             else:
@@ -385,7 +388,7 @@ class MultiAgent(object):
             os.makedirs(dir_name)
         model_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, self.name)
         saver = tf.train.Saver(model_vars)
-        save_path = saver.save(self.sess, dir_name + "/{}_model_{}.ckpt".format(self.name, epoch))
+        save_path = saver.save(self.sess, dir_name + "/{}".format(self.name), global_step=epoch)
         print("[*] Model saved in file: {}".format(save_path))
 
     def load(self, dir_path, epoch=0):
@@ -401,7 +404,7 @@ class MultiAgent(object):
             dir_name = os.path.join(dir_path, self.name)
             model_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, self.name)
             saver = tf.train.Saver(model_vars)
-            file_path = os.path.join(dir_name, "{}_model_{}.ckpt".format(self.name, epoch))
+            file_path = os.path.join(dir_name, "{}-{}".format(self.name, epoch))
             saver.restore(self.sess, file_path)
         except Exception as e:
             print("[!] Load model falied, please check {} exists".format(file_path))
@@ -424,13 +427,12 @@ class MultiAgent(object):
             state_clus[i] = np.stack(batch.state)
             next_state_clus[i] = np.stack(batch.next_state)
 
-            acts = np.stack(batch.action)
-            act_clus[i] = np.eye(acts.shape[0], self.env.action_space[i].n)[acts]
+            act_clus[i] = np.stack(batch.action)
 
         # get target action
         next_act_clus = [None for _ in range(self.n_agent)]
         for i, batch in enumerate(batch_list):
-            next_act_clus[i] = self.actors[i].target_act(batch.next_state, one_hot=True)
+            next_act_clus[i] = self.actors[i].target_act(batch.next_state, one_hot=False)
 
         # train critic
         for i, batch in enumerate(batch_list):
@@ -441,7 +443,11 @@ class MultiAgent(object):
 
         # train actor
         for i, batch in enumerate(batch_list):
-            a_loss[i] = self.actors[i].train(batch.state, state_clus, self.mask_act_phs[i])
+            feed_dict = dict()
+            feed_dict.update(zip(self.act_phs, act_clus))
+            feed_dict.update(zip(self.obs_phs, state_clus))
+
+            a_loss[i] = self.actors[i].train(feed_dict)
 
         return a_loss, c_loss
 
@@ -455,8 +461,6 @@ class MultiAgent(object):
             return None
 
         n_batch = 1
-
-        print("-- training: [num_replay]: {} [n_batch]: {}".format(len(self.replay_buffer), n_batch))
         mean_a_loss, mean_c_loss = [0.] * self.n_agent, [0.] * self.n_agent
 
         for i in range(n_batch):
@@ -470,4 +474,4 @@ class MultiAgent(object):
         mean_a_loss = list(map(lambda x: x / n_batch, mean_a_loss))
         mean_c_loss = list(map(lambda x: x / n_batch, mean_c_loss))
 
-        return mean_a_loss, mean_c_loss
+        return {'a_loss': mean_a_loss, 'c_loss': mean_c_loss}

@@ -29,10 +29,10 @@ if __name__ == '__main__':
 
     parser.add_argument('--n_agent', type=int, default=2, help='Set the number of agents (default=2')
     parser.add_argument('--len_episode', type=int, default=25, help='Time horizon limitation (default=25).')
-    parser.add_argument('--n_train', type=int, default=100, help='Training round.')
+    parser.add_argument('--n_train', type=int, default=10000, help='Training round.')
     parser.add_argument('--eval_interval', type=int, default=50, help='Evaluation episode interval (default=50).')
     parser.add_argument('--batch_size', type=int, default=64, help='Batch size (default=64).')
-    parser.add_argument('--memory_size', type=int, default=10**5, help='Memory size (default=10**5).')
+    parser.add_argument('--memory_size', type=int, default=1000, help='Memory size (default=10**5).')
     parser.add_argument('--load', type=int, default=0, help='Load existed model.')
 
     parser.add_argument('--actor_lr', type=float, default=1e-4, help='Setting learning rate for Actor (default=1e-4).')
@@ -83,9 +83,13 @@ if __name__ == '__main__':
 
     merged = tf.summary.merge_all()
 
-    if not os.path.exists(LOG_DIR):
-        os.makedirs(LOG_DIR)
-    summary_writer = tf.summary.FileWriter(LOG_DIR)
+    log_dir = os.path.join(LOG_DIR, args.name)
+    if not os.path.exists(log_dir):
+        os.makedirs(log_dir)
+    else:
+        tf.gfile.DeleteRecursively(log_dir)
+
+    summary_writer = tf.summary.FileWriter(log_dir)
 
     maddpg.init()  # run self.sess.run(tf.global_variables_initializer()) and hard update
 
@@ -110,11 +114,16 @@ if __name__ == '__main__':
         act_n = maddpg.act(obs_n)
         next_obs_n, reward_n, done_n, info_n = env.step(act_n)
 
+        # if step % 10:
+        #     print('step-[{}] reward {}'.format(step, reward_n))
+
         if not args.render and not is_evaluate:  # trigger for data collection
             maddpg.store_trans(obs_n, act_n, next_obs_n, reward_n, done_n)
 
         obs_n = next_obs_n
-        episode_r_n = map(operator.add, episode_r_n, reward_n)
+
+        if args.render or is_evaluate:
+            episode_r_n = map(operator.add, episode_r_n, reward_n)
 
         step += 1
 
@@ -124,10 +133,11 @@ if __name__ == '__main__':
         else:
             if not is_evaluate:  # trigger for training
                 t_info_n = maddpg.train()
+                print('step: {}, {}'.format(step, t_info_n))
 
                 if t_info_n is not None:
-                    a_loss = map(lambda x, y: y.append(x), t_info_n['a_loss'], a_loss)
-                    c_loss = map(lambda x, y: y.append(x), t_info_n['c_loss'], c_loss)
+                    a_loss = map(lambda x, y: y + [x], t_info_n['a_loss'], a_loss)
+                    c_loss = map(lambda x, y: y + [x], t_info_n['c_loss'], c_loss)
 
         if step % args.len_episode == 0 or np.any(done_n):
             obs_n = env.reset()
@@ -139,8 +149,10 @@ if __name__ == '__main__':
                 episode_r_n = [0. for _ in range(env.n)]
 
             if not args.render and is_evaluate:
-                a_loss = map(lambda x: sum(x) / len(x), a_loss)
-                c_loss = map(lambda x: sum(x) / len(x), c_loss)
+                a_loss = list(map(lambda x: sum(x) / len(x), a_loss))
+                c_loss = list(map(lambda x: sum(x) / len(x), c_loss))
+
+                print("\n--- episode-{} [a-loss]: {} [c-loss]: {}".format(step // args.len_episode - 1, a_loss, c_loss))
 
                 feed_dict.update(zip(summary_dict['a_loss'], a_loss))
                 feed_dict.update(zip(summary_dict['c_loss'], c_loss))
