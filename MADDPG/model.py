@@ -21,6 +21,11 @@ class BunchBuffer(Buffer):
         return self._size
 
     def push(self, *args):
+        """ Append coming transition into inner dataset
+
+        :param args: ordered tuple (state, action, next_state, reward, done)
+        """
+
         for i, (state, action, next_state, reward, done) in enumerate(zip(*args)):
             if len(self._data[i]) < self._capacity:
                 self._data[i].append(None)
@@ -30,6 +35,12 @@ class BunchBuffer(Buffer):
         self._size = min(self._size + 1, self._capacity)
 
     def sample(self, batch_size):
+        """ Sample mini-batch data with given size
+
+        :param batch_size: int, indicates the size of mini-batch
+        :return: a list of batch data for N agents
+        """
+
         if self._size < batch_size:
             return None
 
@@ -81,10 +92,7 @@ class Actor(BaseModel):
             self.eval_net = self._construct(self.act_dim)
             self._act_prob = tf.nn.softmax(self.eval_net)
 
-            self._act_input = tf.placeholder(tf.int32, shape=(None,), name="act-input")
-
-            clip_value = tf.clip_by_value(self._act_prob / tf.stop_gradient(self._act_prob), 0.99, 1.)
-            self._act_tf = tf.one_hot(self._act_input, self.act_dim) * clip_value
+            self._act_tf = self._act_prob
 
         with tf.variable_scope("target"):
             self._target_scope = tf.get_variable_scope().name
@@ -105,7 +113,7 @@ class Actor(BaseModel):
 
     @property
     def act_tensor(self):
-        return self._act_input, self._act_tf
+        return self._act_tf
 
     @property
     def obs_tensor(self):
@@ -170,7 +178,7 @@ class Critic(BaseModel):
 
         self._lr = lr
         self._tau = tau
-        self.L2 = 0.5
+        self.L2 = 1e-3
         self.gamma = gamma
 
         self.multi_obs_phs = multi_obs_phs
@@ -196,9 +204,10 @@ class Critic(BaseModel):
                                     in zip(self.t_variables, self.e_variables)]
 
         with tf.variable_scope("Optimization"):
-            # weight_decay = tf.add_n([self.L2 * tf.nn.l2_loss(var) for var in self.e_variables])
+            weight_decay = tf.add_n([self.L2 * tf.nn.l2_loss(var) for var in self.e_variables])
+
             self.t_q_input = tf.placeholder(tf.float32, shape=(None, 1), name="target-input")
-            self.loss = 0.5 * tf.reduce_mean(tf.square(self.t_q_input - self.e_q))
+            self.loss = 0.5 * tf.reduce_mean(tf.square(self.t_q_input - self.e_q)) + weight_decay
 
             optimizer = tf.train.AdamOptimizer(self._lr)
             grad_vars = optimizer.compute_gradients(self.loss, self.e_variables)
@@ -243,7 +252,7 @@ class Critic(BaseModel):
 
         self.sess.run(self._soft_update_op)
 
-    def calculate_target_q(self, next_obs_list, next_act_list):
+    def calculate_next_q(self, next_obs_list, next_act_list):
         """ Return target Q value
 
         :param next_obs_list: list, a list of N agents' observations
@@ -309,12 +318,8 @@ class MultiAgent(object):
 
             # collect action outputs of all actors
             self.obs_phs = [actor.obs_tensor for actor in self.actors]
-            act_phs_and_tf = [actor.act_tensor for actor in self.actors]
-
-            self.act_phs = list(map(lambda x: x[0], act_phs_and_tf))
-            act_tfs = list(map(lambda x: x[1], act_phs_and_tf))
-
-            # self.mask_act_phs = [None for _ in range(self.n_agent)]
+            act_tfs = [actor.act_tensor for actor in self.actors]
+            self.act_phs = act_tfs
 
             for i in range(self.env.n):
                 print("initialize critic for agent {} ...".format(i))
@@ -370,18 +375,13 @@ class MultiAgent(object):
             actions.append(np.random.choice(n, p=policy))
         return actions
 
-    def async_update(self):
-        """ Soft update target actors and critics. """
-
-        for j in range(self.env.n):
-            self.actors[j].soft_update()
-            self.critics[j].soft_update()
-
     def save(self, dir_path, epoch):
         """ Save model
-        :param dir_path: str, the grandparent directory which stores all models
-        :param epoch: int, number of current round
+        :param dir_path: str, the grandparent directory path for model saving
+        :param epoch: int, global step
         """
+
+        # TODO(ming): store replay-buffer too
 
         dir_name = os.path.join(dir_path, self.name)
         if not os.path.exists(dir_name):
@@ -392,11 +392,13 @@ class MultiAgent(object):
         print("[*] Model saved in file: {}".format(save_path))
 
     def load(self, dir_path, epoch=0):
-        """ Load model from local storage, if no such model file, it will print warning to you
+        """ Load model from local storage, if no such file, it will throw an exception.
 
-        :param dir_path: str, the grandparent directory which stores all models
-        :param epoch: int, the index which used for indicating a certain model file
+        :param dir_path: str, the grandparent directory path for model saving
+        :param epoch: int, global step
         """
+
+        # TODO(ming): load replay-buffer too
 
         file_path = None
 
@@ -407,7 +409,7 @@ class MultiAgent(object):
             file_path = os.path.join(dir_name, "{}-{}".format(self.name, epoch))
             saver.restore(self.sess, file_path)
         except Exception as e:
-            print("[!] Load model falied, please check {} exists".format(file_path))
+            print("[!] Load model failed, please check {} exists".format(file_path))
             exit(1)
 
     def train_step(self, batch_list):
@@ -429,14 +431,18 @@ class MultiAgent(object):
 
             act_clus[i] = np.stack(batch.action)
 
+            # convert to onehot
+            act_clus[i] = np.eye(len(act_clus[i]), self.env.action_space[i].n)[act_clus[i]]
+
         # get target action
         next_act_clus = [None for _ in range(self.n_agent)]
         for i, batch in enumerate(batch_list):
             next_act_clus[i] = self.actors[i].target_act(batch.next_state, one_hot=False)
+            next_act_clus[i] = np.eye(len(next_act_clus[i]), self.env.action_space[i].n)[next_act_clus[i]]
 
         # train critic
         for i, batch in enumerate(batch_list):
-            target_q = self.critics[i].calculate_target_q(next_state_clus, next_act_clus).reshape((-1,))
+            target_q = self.critics[i].calculate_next_q(next_state_clus, next_act_clus).reshape((-1,))
             target_q = np.array(batch.reward) + (1. - np.array(batch.done)) * target_q * self.gamma
 
             c_loss[i] = self.critics[i].train(target_q.reshape((-1, 1)), state_clus, act_clus)
@@ -464,7 +470,6 @@ class MultiAgent(object):
         mean_a_loss, mean_c_loss = [0.] * self.n_agent, [0.] * self.n_agent
 
         for i in range(n_batch):
-            # print("--- train batch #{} ...".format(i))
             batch_list = self.replay_buffer.sample(self.batch_size)
             a_loss, c_loss = self.train_step(batch_list)
 

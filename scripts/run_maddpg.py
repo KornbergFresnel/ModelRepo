@@ -44,10 +44,13 @@ if __name__ == '__main__':
     parser.add_argument('--render', action='store_true', help='Turn on render or not.')
     args = parser.parse_args()
 
+    print('=== Configuration:\n', args)
+
     # =========================== initialize environment =========================== #
     step, steps_limit = 0, args.len_episode * args.n_train
     scenario = multiagent.scenarios.load(args.scenario).Scenario()
-    world = scenario.make_world(num_agents=args.n_agent, world_dim_c=1, num_landmarks=1, num_adversaries=args.n_agent // 2)
+    world = scenario.make_world(num_agents=args.n_agent, world_dim_c=1, num_landmarks=args.n_agent // 2,
+                                num_adversaries=args.n_agent // 2)
 
     env = multiagent.environment.MultiAgentEnv(world, scenario.reset_world, scenario.reward, scenario.observation,
                                                info_callback=None, shared_viewer=True)
@@ -114,9 +117,6 @@ if __name__ == '__main__':
         act_n = maddpg.act(obs_n)
         next_obs_n, reward_n, done_n, info_n = env.step(act_n)
 
-        # if step % 10:
-        #     print('step-[{}] reward {}'.format(step, reward_n))
-
         if not args.render and not is_evaluate:  # trigger for data collection
             maddpg.store_trans(obs_n, act_n, next_obs_n, reward_n, done_n)
 
@@ -133,7 +133,7 @@ if __name__ == '__main__':
         else:
             if not is_evaluate:  # trigger for training
                 t_info_n = maddpg.train()
-                print('step: {}, {}'.format(step, t_info_n))
+                # print('step: {}, {}'.format(step, t_info_n))
 
                 if t_info_n is not None:
                     a_loss = map(lambda x, y: y + [x], t_info_n['a_loss'], a_loss)
@@ -160,7 +160,7 @@ if __name__ == '__main__':
                 a_loss = [[] for _ in range(env.n)]
                 c_loss = [[] for _ in range(env.n)]
 
-                maddpg.save(MODEL_BACK_UP, step // args.len_episode)
+                maddpg.save(MODEL_BACK_UP, step // args.len_episode - 1)
 
             if args.render or is_evaluate:
                 summary = sess.run(merged, feed_dict=feed_dict)
