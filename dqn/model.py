@@ -78,6 +78,9 @@ class DQN(BaseModel):
 
         return out
 
+    def init(self):
+        self.sess.run([tf.global_variables_initializer(), self.async])
+
     def act(self, obs, factor=0.):
         policy, value = self.sess.run([self.policy, self.eval_q_tf], feed_dict={
             self.state_ph: [obs],
