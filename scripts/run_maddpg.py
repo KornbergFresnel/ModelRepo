@@ -30,9 +30,9 @@ if __name__ == '__main__':
     parser.add_argument('--n_agent', type=int, default=2, help='Set the number of agents (default=2')
     parser.add_argument('--len_episode', type=int, default=25, help='Time horizon limitation (default=25).')
     parser.add_argument('--n_train', type=int, default=10000, help='Training round.')
-    parser.add_argument('--eval_interval', type=int, default=50, help='Evaluation episode interval (default=50).')
+    parser.add_argument('--eval_interval', type=int, default=200, help='Evaluation episode interval (default=50).')
     parser.add_argument('--batch_size', type=int, default=64, help='Batch size (default=64).')
-    parser.add_argument('--memory_size', type=int, default=1000, help='Memory size (default=10**5).')
+    parser.add_argument('--memory_size', type=int, default=10**6, help='Memory size (default=10**5).')
     parser.add_argument('--load', type=int, default=0, help='Load existed model.')
 
     parser.add_argument('--actor_lr', type=float, default=1e-4, help='Setting learning rate for Actor (default=1e-4).')
