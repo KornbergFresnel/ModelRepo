@@ -10,15 +10,11 @@ sys.path.insert(1, os.path.join(sys.path[0], '../lib/ma_env'))
 
 from lib import multiagent
 from MADDPG.model import MultiAgent
+from settings import *
 
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 tf.logging.set_verbosity(tf.logging.ERROR)
-
-
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-LOG_DIR = os.path.join(BASE_DIR, 'log')
-MODEL_BACK_UP = os.path.join(BASE_DIR, 'data')
 
 
 if __name__ == '__main__':
