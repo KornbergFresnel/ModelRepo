@@ -35,4 +35,13 @@ A simple multi-agent communication framework proposed by *Sainbayar Sukhbaatar*,
 
 - run `leaver_train.py` to train the model, you can also visit [KornbergFrsnel: CommNet](https://github.com/KornbergFresnel/CommNet) directly to get more information
 
-- the paper has several different playgrounds, while there has only *Leaver* implemented in this repo so far (maybe I will add more playgrouds, but who knows.)
+- the paper has several different playgrounds, while there has only *Leaver* implemented in this repo so far (maybe I will add more playgrounds, but who knows.)
+
+**[DDPG (CONTINUOUS CONTROL WITH DEEP REINFORCEMENT
+LEARNING)](https://arxiv.org/pdf/1509.02971.pdf)**
+
+**Independent Q-learning Network: (D)DQN / (D)DQN with Dueling**
+
+**[SAC: Soft Actor Critic](https://arxiv.org/pdf/1801.01290.pdf)**
+
+**[MASQ: Multiagent Soft Q-learning](http://arxiv.org/abs/1804.09817)**
