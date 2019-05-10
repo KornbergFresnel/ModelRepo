@@ -70,19 +70,19 @@ if __name__ == '__main__':
 
     summary_dict = {'reward': summary_r}
 
-    if not args.render:
-        summary_p_loss = [None for _ in range(env.n)]
-        summary_q_loss = [None for _ in range(env.n)]
+    # if not args.render:
+    summary_p_loss = [None for _ in range(env.n)]
+    summary_q_loss = [None for _ in range(env.n)]
 
-        for i in range(env.n):
-            summary_p_loss[i] = tf.placeholder(tf.float32, None)
-            summary_q_loss[i] = tf.placeholder(tf.float32, None)
+    for i in range(env.n):
+        summary_p_loss[i] = tf.placeholder(tf.float32, None)
+        summary_q_loss[i] = tf.placeholder(tf.float32, None)
 
-            tf.summary.scalar('Actor-Loss-{}'.format(i), summary_p_loss[i])
-            tf.summary.scalar('Critic-Loss-{}'.format(i), summary_q_loss[i])
+        tf.summary.scalar('Actor-Loss-{}'.format(i), summary_p_loss[i])
+        tf.summary.scalar('Critic-Loss-{}'.format(i), summary_q_loss[i])
 
-        summary_dict['p_loss'] = summary_p_loss
-        summary_dict['q_loss'] = summary_q_loss
+    summary_dict['p_loss'] = summary_p_loss
+    summary_dict['q_loss'] = summary_q_loss
 
     merged = tf.summary.merge_all()
 
@@ -103,8 +103,10 @@ if __name__ == '__main__':
 
     # ======================================== main loop ======================================== #
     p_loss, q_loss = None, None
-    if args.render:
-        env.render()
+    is_evaluate = False
+
+    if args.render and is_evaluate:
+        env.render(mode=None)
     else:
         p_loss = [[] for _ in range(env.n)]
         q_loss = [[] for _ in range(env.n)]
@@ -113,13 +115,12 @@ if __name__ == '__main__':
     episode_r_n = [0. for _ in range(env.n)]
 
     # update this flag every `len_episode * eval_interval` steps, if it is true, then no training and data collection
-    is_evaluate = False
 
     while step < steps_limit:
         act_n = [agent.act(obs) for agent, obs in zip(ddpg, obs_n)]
         next_obs_n, reward_n, done_n, info_n = env.step(act_n)
 
-        if not args.render and not is_evaluate:  # trigger for data collection
+        if not is_evaluate:  # trigger for data collection
             _ = [agent.store_transition(o, a, next_o, r, done) for agent, o, a, next_o, r, done in zip(ddpg, obs_n, act_n, next_obs_n, reward_n, done_n)]
 
         obs_n = next_obs_n
@@ -130,8 +131,8 @@ if __name__ == '__main__':
         step += 1
 
         # =============================== render / record / model saving ===============================
-        if args.render:
-            env.render()
+        if args.render and is_evaluate:
+            env.render(mode=None)
 
         if step % args.len_episode == 0 or np.any(done_n):
             obs_n = env.reset()
@@ -142,14 +143,14 @@ if __name__ == '__main__':
                 feed_dict.update(zip(summary_dict['reward'], episode_r_n))
                 episode_r_n = [0. for _ in range(env.n)]
 
-            if not args.render and not is_evaluate:
+            if not is_evaluate:
                 _loss = [agent.train() for agent in ddpg]
 
                 if _loss[0] is not None:
                     p_loss = map(lambda x, y: y + [x[0]], _loss, p_loss)
                     q_loss = map(lambda x, y: y + [x[1]], _loss, q_loss)
 
-            if not args.render and is_evaluate:
+            if is_evaluate:
                 p_loss = list(map(lambda x: sum(x) / len(x), p_loss))
                 q_loss = list(map(lambda x: sum(x) / len(x), q_loss))
 
@@ -163,9 +164,12 @@ if __name__ == '__main__':
 
                 _ = [agent.save(MODEL_BACK_UP, step // args.len_episode - 1) for agent in ddpg]
 
-            if args.render or is_evaluate:
+            if is_evaluate:
                 summary = sess.run(merged, feed_dict=feed_dict)
                 summary_writer.add_summary(summary, (step - 1) // args.len_episode)
 
             is_evaluate = (step // args.len_episode % args.eval_interval == 0)
+            # is_evaluate = not is_evaluate
+            env.close()
+            obs_n = env.reset()
 

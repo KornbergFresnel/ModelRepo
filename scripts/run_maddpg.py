@@ -68,17 +68,16 @@ if __name__ == '__main__':
 
     summary_dict = {'reward': summary_r}
 
-    if not args.render:
-        summary_a_loss, summary_c_loss = [None for _ in range(env.n)], [None for _ in range(env.n)]
-        for i in range(env.n):
-            summary_a_loss[i] = tf.placeholder(tf.float32, None)
-            summary_c_loss[i] = tf.placeholder(tf.float32, None)
+    summary_a_loss, summary_c_loss = [None for _ in range(env.n)], [None for _ in range(env.n)]
+    for i in range(env.n):
+        summary_a_loss[i] = tf.placeholder(tf.float32, None)
+        summary_c_loss[i] = tf.placeholder(tf.float32, None)
 
-            tf.summary.scalar('Actor-Loss-{}'.format(i), summary_a_loss[i])
-            tf.summary.scalar('Critic-Loss-{}'.format(i), summary_c_loss[i])
+        tf.summary.scalar('Actor-Loss-{}'.format(i), summary_a_loss[i])
+        tf.summary.scalar('Critic-Loss-{}'.format(i), summary_c_loss[i])
 
-        summary_dict['a_loss'] = summary_a_loss
-        summary_dict['c_loss'] = summary_c_loss
+    summary_dict['a_loss'] = summary_a_loss
+    summary_dict['c_loss'] = summary_c_loss
 
     merged = tf.summary.merge_all()
 
@@ -97,8 +96,10 @@ if __name__ == '__main__':
 
     # ======================================== main loop ======================================== #
     a_loss, c_loss = None, None
-    if args.render:
-        env.render()
+    is_evaluate = False
+
+    if is_evaluate:
+        env.render(mode=None)
     else:
         a_loss = [[] for _ in range(env.n)]
         c_loss = [[] for _ in range(env.n)]
@@ -107,7 +108,6 @@ if __name__ == '__main__':
     episode_r_n = [0. for _ in range(env.n)]
 
     # update this flag every `len_episode * eval_interval` steps, if it is true, then no training and data collection
-    is_evaluate = False
 
     while step < steps_limit:
         act_n = maddpg.act(obs_n)
@@ -118,14 +118,14 @@ if __name__ == '__main__':
 
         obs_n = next_obs_n
 
-        if args.render or is_evaluate:
+        if is_evaluate:
             episode_r_n = map(operator.add, episode_r_n, reward_n)
 
         step += 1
 
         # =============================== render / record / model saving ===============================
-        if args.render:
-            env.render()
+        if is_evaluate:
+            env.render(mode=None)
         else:
             if not is_evaluate:  # trigger for training
                 t_info_n = maddpg.train()
@@ -136,15 +136,13 @@ if __name__ == '__main__':
                     c_loss = map(lambda x, y: y + [x], t_info_n['c_loss'], c_loss)
 
         if step % args.len_episode == 0 or np.any(done_n):
-            obs_n = env.reset()
-
             feed_dict = dict()
 
-            if args.render or is_evaluate:
+            if is_evaluate:
                 feed_dict.update(zip(summary_dict['reward'], episode_r_n))
                 episode_r_n = [0. for _ in range(env.n)]
 
-            if not args.render and is_evaluate:
+            if is_evaluate:
                 a_loss = list(map(lambda x: sum(x) / len(x), a_loss))
                 c_loss = list(map(lambda x: sum(x) / len(x), c_loss))
 
@@ -158,8 +156,11 @@ if __name__ == '__main__':
 
                 maddpg.save(MODEL_BACK_UP, step // args.len_episode - 1)
 
-            if args.render or is_evaluate:
+            if is_evaluate:
                 summary = sess.run(merged, feed_dict=feed_dict)
                 summary_writer.add_summary(summary, (step - 1) // args.len_episode)
 
             is_evaluate = (step // args.len_episode % args.eval_interval == 0)
+            # is_evaluate = not is_evaluate
+            env.close()
+            obs_n = env.reset()
