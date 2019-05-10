@@ -87,10 +87,10 @@ if __name__ == '__main__':
 
     summary_writer = tf.summary.FileWriter(log_dir)
 
-    maddpg.init()  # run self.sess.run(tf.global_variables_initializer()) and hard update
+    _ = [agent.init() for agent in ddpg]  # run self.sess.run(tf.global_variables_initializer()) and hard update
 
     if args.load > 0:
-        maddpg.load(os.path.join(MODEL_BACK_UP, args.name), epoch=args.load)
+        _ = [agent.load(os.path.join(MODEL_BACK_UP, args.name), epoch=args.load) for agent in ddpg]
 
     # ======================================== main loop ======================================== #
     loss = None
