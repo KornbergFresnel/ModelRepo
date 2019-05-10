@@ -466,7 +466,7 @@ class MultiAgent(object):
         if len(self.replay_buffer) < self.batch_size:
             return None
 
-        n_batch = 1
+        n_batch = len(self.replay_buffer) // self.batch_size
         mean_a_loss, mean_c_loss = [0.] * self.n_agent, [0.] * self.n_agent
 
         for i in range(n_batch):
