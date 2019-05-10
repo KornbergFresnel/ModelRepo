@@ -19,7 +19,7 @@ tf.logging.set_verbosity(tf.logging.ERROR)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=None)
-    parser.add_argument('--name', type=str, default='maddpg', help='Naming for logging.')
+    parser.add_argument('--name', type=str, default='ddpg', help='Naming for logging.')
     parser.add_argument('--scenario', type=str, default='simple_push.py',
                         help='Path of the scenario Python script (default=push_ball.py).')
 
@@ -31,7 +31,9 @@ if __name__ == '__main__':
     parser.add_argument('--memory_size', type=int, default=10**6, help='Memory size (default=10**5).')
     parser.add_argument('--load', type=int, default=0, help='Load existed model.')
 
-    parser.add_argument('--lr', type=float, default=1e-4, help='Setting learning rate for Actor (default=1e-4).')
+    parser.add_argument('--actor_lr', type=float, default=1e-4, help='Setting learning rate for Actor (default=1e-4).')
+    parser.add_argument('--critic_lr', type=float, default=1e-3,
+                        help='Setting learning rate for Critic (default=1e-3).')
     parser.add_argument('--tau', type=float, default=0.01, help='Hyper-parameter for soft update (default=0.01).')
     parser.add_argument('--gamma', type=float, default=0.98, help='Discount factor (default=0.98).')
 
@@ -56,7 +58,8 @@ if __name__ == '__main__':
 
     ddpg = [None for _ in range(env.n)]
     for i in range(env.n):
-        ddpg[i] = DDPG(args.name, sess, env.observation_space[i].shape, (env.action_space[i].n,), args.len_episode, args.gamma, args.lr)
+        with tf.variable_scope('ddpg_agent-{}'.format(i)):
+            ddpg[i] = DDPG("{}_agent-{}".format(args.name, i), sess, env.observation_space[i].shape, (env.action_space[i].n,), args.gamma, args.actor_lr, args.critic_lr, args.memory_size, args.batch_size, args.tau)
 
     # initialize summary
     summary_r = [None for _ in range(env.n)]
@@ -68,14 +71,18 @@ if __name__ == '__main__':
     summary_dict = {'reward': summary_r}
 
     if not args.render:
-        summary_loss = [None for _ in range(env.n)]
+        summary_p_loss = [None for _ in range(env.n)]
+        summary_q_loss = [None for _ in range(env.n)]
 
         for i in range(env.n):
-            summary_loss[i] = tf.placeholder(tf.float32, None)
+            summary_p_loss[i] = tf.placeholder(tf.float32, None)
+            summary_q_loss[i] = tf.placeholder(tf.float32, None)
 
-            tf.summary.scalar('Loss-{}'.format(i), summary_loss[i])
+            tf.summary.scalar('Actor-Loss-{}'.format(i), summary_p_loss[i])
+            tf.summary.scalar('Critic-Loss-{}'.format(i), summary_q_loss[i])
 
-        summary_dict['loss'] = summary_a_loss
+        summary_dict['p_loss'] = summary_p_loss
+        summary_dict['q_loss'] = summary_q_loss
 
     merged = tf.summary.merge_all()
 
@@ -87,17 +94,20 @@ if __name__ == '__main__':
 
     summary_writer = tf.summary.FileWriter(log_dir)
 
-    _ = [agent.init() for agent in ddpg]  # run self.sess.run(tf.global_variables_initializer()) and hard update
+    sess.run(tf.global_variables_initializer())
+
+    _ = [agent.sync_net() for agent in ddpg]
 
     if args.load > 0:
         _ = [agent.load(os.path.join(MODEL_BACK_UP, args.name), epoch=args.load) for agent in ddpg]
 
     # ======================================== main loop ======================================== #
-    loss = None
+    p_loss, q_loss = None, None
     if args.render:
         env.render()
     else:
-        loss = [[] for _ in range(env.n)]
+        p_loss = [[] for _ in range(env.n)]
+        q_loss = [[] for _ in range(env.n)]
 
     obs_n = env.reset()
     episode_r_n = [0. for _ in range(env.n)]
@@ -106,11 +116,11 @@ if __name__ == '__main__':
     is_evaluate = False
 
     while step < steps_limit:
-        act_n = [agent.act(obs_n) for agent in ddpg]
+        act_n = [agent.act(obs) for agent, obs in zip(ddpg, obs_n)]
         next_obs_n, reward_n, done_n, info_n = env.step(act_n)
 
         if not args.render and not is_evaluate:  # trigger for data collection
-            _ = [agent.store_trans(o, a, next_o, r, done) for o, a, next_o, r, done in zip(ddpg, obs_n, act_n, next_obs_n, reward_n, done_n)]
+            _ = [agent.store_transition(o, a, next_o, r, done) for agent, o, a, next_o, r, done in zip(ddpg, obs_n, act_n, next_obs_n, reward_n, done_n)]
 
         obs_n = next_obs_n
 
@@ -136,16 +146,20 @@ if __name__ == '__main__':
                 _loss = [agent.train() for agent in ddpg]
 
                 if _loss[0] is not None:
-                    loss = map(lambda x, y: y + [x], _loss, loss)
+                    p_loss = map(lambda x, y: y + [x[0]], _loss, p_loss)
+                    q_loss = map(lambda x, y: y + [x[1]], _loss, q_loss)
 
             if not args.render and is_evaluate:
-                loss = list(map(lambda x: sum(x) / len(x), loss))
+                p_loss = list(map(lambda x: sum(x) / len(x), p_loss))
+                q_loss = list(map(lambda x: sum(x) / len(x), q_loss))
 
-                print("\n--- episode-{} [loss]: {}".format(step // args.len_episode - 1, loss))
+                print("\n--- episode-{} [p-loss]: {} [q-loss]: {}".format(step // args.len_episode - 1, p_loss, q_loss))
 
-                feed_dict.update(zip(summary_dict['loss'], loss))
+                feed_dict.update(zip(summary_dict['p_loss'], p_loss))
+                feed_dict.update(zip(summary_dict['q_loss'], q_loss))
 
-                loss = [[] for _ in range(env.n)]
+                p_loss = [[] for _ in range(env.n)]
+                q_loss = [[] for _ in range(env.n)]
 
                 _ = [agent.save(MODEL_BACK_UP, step // args.len_episode - 1) for agent in ddpg]
 

@@ -12,6 +12,9 @@ class Buffer:
         self._capacity = capacity
         self._flag = 0
 
+    def __len__(self):
+        return len(self._data)
+
     def push(self, *args):
         """args: state, action, next_state, reward, done"""
 
