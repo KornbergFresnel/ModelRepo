@@ -22,7 +22,7 @@ A multi-agent deterministic policy gradient framework is proposed by *Ryan Lowe*
 
 - arXiv link: [Multi-Agent Actor-Critic Mixed Cooperative-Competitive Environments](https://arxiv.org/abs/1706.02275)
 
-- run `run.py` to train the model, get more information about execution: `python run.py -h`
+- run `./scripts/run_maddpg.py` to train the model, get more information about execution: `python ./scripts/run_maddpg.py -h`
 
 - if you wanna try different parameters configuration, you can modify the `config.py`
 
