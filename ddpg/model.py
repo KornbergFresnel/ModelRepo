@@ -47,7 +47,7 @@ class DDPG(BaseModel):
         with tf.name_scope('update'):
             e_p_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=p_scope)
             t_p_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=t_p_scope)
-            
+
             e_q_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=q_scope)
             t_q_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=t_q_scope)
 
@@ -104,7 +104,7 @@ class DDPG(BaseModel):
 
         for _ in range(n_batch):
             data = self.replay_buffer.sample(self.batch_size)
-            
+
             c_loss, _ = self.sess.run([self.c_loss, self.c_train], feed_dict={
                 self.state_ph: data.state,
                 self.reward_ph: data.reward,
