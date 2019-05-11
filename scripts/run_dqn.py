@@ -12,6 +12,8 @@ sys.path.insert(1, osp.join(sys.path[0], '../lib/ma_env'))
 from lib import multiagent
 from dqn.model import DQN
 from settings import *
+from lib.tools import learning_control
+
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 tf.logging.set_verbosity(tf.logging.ERROR)
@@ -108,9 +110,10 @@ if __name__ == '__main__':
     episode_r_n = [0. for _ in range(env.n)]
 
     # update this flag every `len_episode * eval_interval` steps, if it is true, then no training and data collection
-
+    explor_factor = 0.8
     while step < steps_limit:
-        act_n = [agent.act(obs) for agent, obs in zip(dqn, obs_n)]
+        explor_factor = learning_control.linear_decay(explor_factor, (0.8 - 0.05) / args.steps_limit, min_val=0.05, max_val=0.8)
+        act_n = [agent.act(obs, factor=explor_factor) for agent, obs in zip(dqn, obs_n)]
         next_obs_n, reward_n, done_n, info_n = env.step(act_n)
 
         if not is_evaluate:  # trigger for data collection
