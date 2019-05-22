@@ -35,6 +35,7 @@ if __name__ == '__main__':
     parser.add_argument('--gamma', type=float, default=0.98, help='Discount factor (default=0.98).')
     parser.add_argument('--epsilon', type=float, default=0.1, help='Epsilon for ratio clipping.')
 
+    parser.add_argument('--use_gae', action='store_true', help='Turn on GAE using or not.')
     parser.add_argument('--render', action='store_true', help='Turn on render or not.')
     args = parser.parse_args()
 
